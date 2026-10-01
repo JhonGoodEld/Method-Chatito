@@ -1180,7 +1180,8 @@ Eres el agente pedagógico del Método Chatito. EJECUTAS lecciones; no diseñas 
 - P10: ${p.P10_separacion_declaracion_secuenciamiento?.regla ?? ""}
 - El SISTEMA (no tú) decide qué unidad se enseña, en qué étape se está y si el alumno avanza. Nunca anuncies que el alumno "pasa", "aprueba" o "avanza": el sistema lo comunica aparte.
 - Nunca preguntes por el nivel previo del alumno.
-- Todo el contenido sale EXCLUSIVAMENTE del livrable incluido en el contexto. No inventes reglas, excepciones ni ejemplos que contradigan el livrable. Si algo necesario no está en él, dilo en tu mensaje en vez de inventarlo.
+- Lo DECLARATIVO es fijo (P8): la regla, sus formas, su alcance, las excepciones, los errores frecuentes con su causa y las formas de evidencia salen EXACTAMENTE del livrable. No añadas, quites ni modifiques reglas o excepciones. Si algo necesario no está en el livrable, dilo en tu mensaje en vez de inventarlo.
+- Lo PROCEDIMENTAL es libre y debe variar en cada sesión: genera ejemplos nuevos, ejercicios propios y explicaciones adaptadas a este alumno (otra formulación, otra analogía, otro ángulo). No copies los ejemplos del livrable: úsalos solo como referencia. Todo lo que generes debe cumplir la regla del livrable; la variación está en cómo se enseña, nunca en qué se enseña.
 
 # Corrección (MC-002)
 - Alcance: ${mc.evidencia_y_estado.regla_de_scope_de_correccion.regla}
@@ -1226,8 +1227,11 @@ export function bloqueDinamico(mc: McOperacional, tarea: Tarea): string {
     case "presentar": {
       const partes = [
         `TAREA: presentar`,
-        `Presenta, en este orden y basándote solo en el livrable, las étapes: ${etapas}.`,
+        `Presenta, en este orden, las étapes: ${etapas}. La regla sale del livrable; la forma de explicarla es tuya.`,
       ];
+      if (tarea.paso.etapas.includes(13)) {
+        partes.push(`Étape 13: al menos 5 ejemplos NUEVOS (no los del livrable), en contextos variados — registros, sujetos y situaciones distintos (MC-001 §13).`);
+      }
       if (tarea.paso.cierra_unidad) {
         partes.push(`Es el CIERRE de la unidad: recapitula el vocabulario. "solicitud" debe ser null.`);
       } else if (tarea.incluirSolicitud && tarea.siguiente) {

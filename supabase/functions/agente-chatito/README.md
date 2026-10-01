@@ -2,9 +2,11 @@
 
 Backend del agente pedagógico. Recibe los mensajes del alumno y ejecuta la lección con el ciclo de 12 étapes de MC-001. Decide qué enseñar con MC-009, registra la evidencia según MC-002 y sugiere reactivaciones según MC-006.
 
+**Lo fijo y lo libre (Principio 8):** el livrable fija lo declarativo, es decir, la regla, sus formas, las excepciones, los errores frecuentes y las formas de evidencia. El agente genera en cada sesión lo procedimental: ejemplos nuevos (al menos 5), explicaciones adaptadas y ejercicios propios. Lo que se corrige es la evidencia del alumno, contrastada con la regla fija.
+
 **Principio de diseño:** el LLM *percibe* (transcribe, cuenta, diagnostica) y el código *decide* (umbrales 80/100, avance de étape, estado de la unidad, secuenciación). El total de ejercicios pedidos lo fija el sistema al registrar la solicitud, así que el agente no puede inflarlo.
 
-Versión de datos: MC-OPERACIONAL v1.4.0 (contrastado con MC-001 v1.0.2 real) · Verificación: `deno check` sin errores · 44 pruebas pasando.
+Versión de datos: MC-OPERACIONAL v1.4.0 (contrastado con MC-001 v1.0.2 real) · Verificación: `deno check` sin errores · 45 pruebas pasando.
 
 ---
 
@@ -244,7 +246,7 @@ delete from logs_sistema where creado_en < now() - interval '90 days';
 ## 7. Pruebas y empaquetado
 
 ```bash
-deno test pruebas/                                      # 44 pruebas; no necesitan red ni BD
+deno test pruebas/                                      # 45 pruebas; no necesitan red ni BD
 deno check index.ts                                     # tipos
 deno run --allow-read --allow-write herramientas/empaquetar.ts   # → agente-chatito-DASHBOARD.ts
 deno check agente-chatito-DASHBOARD.ts

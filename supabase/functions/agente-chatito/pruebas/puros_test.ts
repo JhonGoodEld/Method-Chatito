@@ -188,6 +188,13 @@ Deno.test("prompt estático: principios presentes y sin 'undefined'", () => {
   }
 });
 
+Deno.test("prompt: regla fija, ejemplos y explicaciones libres (P8)", () => {
+  const t = bloqueEstatico(MC, "español");
+  assert(t.includes("DECLARATIVO es fijo") && t.includes("PROCEDIMENTAL es libre") && t.includes("No copies los ejemplos"));
+  const [p0, p1] = MC.leccion.plan_ejecucion.pasos;
+  assert(bloqueDinamico(MC, { tipo: "presentar", paso: p0, siguiente: p1, incluirSolicitud: true }).includes("al menos 5 ejemplos NUEVOS"));
+});
+
 Deno.test("prompt dinámico: la presentación declara evidencia y transformaciones antes de producir", () => {
   const [p0, p1] = MC.leccion.plan_ejecucion.pasos;
   const t = bloqueDinamico(MC, { tipo: "presentar", paso: p0, siguiente: p1, incluirSolicitud: true });
