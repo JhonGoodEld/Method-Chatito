@@ -1,0 +1,100 @@
+{
+  "documento": "EN-GRAFO",
+  "version": "1.0.0",
+  "idioma": "EN",
+  "arquitectura_fuente": "EN-000 v1.0.0 (arquitectura completa, terminada)",
+  "proposito": "Extracto de datos puro para el motor de secuenciación MC-009. Contiene solo Type + Prérequis + sous-domaines por dominio — sin Genèse, sin justificación, sin tabla de Frontières. Se carga junto a MC-OPERACIONAL.json cuando el idioma activo del alumno es inglés.",
+  "estado_validacion": "RESUELTO vía procedimiento LG-100 (Points critiques → Recherche → Décision) el mismo día de generación de este archivo. Ver 'justificacion' en EN-700/EN-800. Pendiente únicamente de ratificación formal por el usuario en el documento EN-000 original — no se ha modificado EN-000 todavía.",
+
+  "dominios": [
+    {
+      "id": "EN-100",
+      "nombre": "Phonologie",
+      "nivel": "Ressource",
+      "nature": "transversal",
+      "prerequis": [],
+      "sous_domaines": ["EN-110","EN-120","EN-130","EN-140","EN-150","EN-160","EN-170","EN-180","EN-190"]
+    },
+    {
+      "id": "EN-200",
+      "nombre": "Orthographe",
+      "nivel": "Ressource",
+      "nature": "transversal",
+      "prerequis": [],
+      "sous_domaines": ["EN-210","EN-220","EN-230","EN-240","EN-250"]
+    },
+    {
+      "id": "EN-300",
+      "nombre": "Lexique",
+      "nivel": "Ressource",
+      "nature": "transversal",
+      "prerequis": [],
+      "sous_domaines": ["EN-310","EN-330","EN-340","EN-350","EN-360","EN-370","EN-380"]
+    },
+    {
+      "id": "EN-400",
+      "nombre": "Système nominal",
+      "nivel": "Système",
+      "nature": "sequentiel",
+      "prerequis": ["EN-300"],
+      "sous_domaines": ["EN-410","EN-420","EN-430","EN-440","EN-450"],
+      "livrables_conocidos": []
+    },
+    {
+      "id": "EN-500",
+      "nombre": "Système verbal",
+      "nivel": "Système",
+      "nature": "sequentiel",
+      "prerequis": ["EN-300", "EN-400"],
+      "nota_tipologica": "Depende de EN-400 por concordancia sujeto-verbo real en inglés (divergencia legítima confirmada frente a KO-500, que NO depende de KO-400 por ausencia de esa concordancia en coreano)",
+      "sous_domaines": ["EN-510","EN-520","EN-530","EN-540","EN-550","EN-560"],
+      "livrables_conocidos": ["EN-411 (piloto, nota: EN-411 es livrable de EN-400, no de EN-500 — se deja aquí solo como referencia de ejemplo de livrable ya generado en la arquitectura)"]
+    },
+    {
+      "id": "EN-600",
+      "nombre": "Syntaxe",
+      "nivel": "Système",
+      "nature": "sequentiel",
+      "prerequis": ["EN-400", "EN-500"],
+      "sous_domaines": ["EN-610","EN-620","EN-630","EN-640","EN-650","EN-660"]
+    },
+    {
+      "id": "EN-700",
+      "nombre": "Discours",
+      "nivel": "Communication",
+      "nature": "sequentiel",
+      "prerequis": ["EN-600"],
+      "justificacion": "Los mecanismos de cohesión discursiva (référence, ellipse, conjonction) operan sobre estructuras gramaticales ya formadas (référence nominale de EN-440, combinaison de propositions de EN-640), no las crean. Fuente: Halliday & Hasan — la cohesión usa recursos gramaticales existentes de la lengua, no constituye un sistema aparte. Resuelto vía LG-100 (Points critiques→Recherche→Décision), pendiente de ratificación formal en EN-000.",
+      "sous_domaines": ["EN-710","EN-720","EN-730","EN-740","EN-750","EN-760"]
+    },
+    {
+      "id": "EN-800",
+      "nombre": "Pragmatique",
+      "nivel": "Communication",
+      "nature": "sequentiel",
+      "prerequis": ["EN-700"],
+      "justificacion": "Las estrategias de indirección/cortesía (EN-830) y los géneros discursivos que EN-800 hereda de EN-760 presuponen coherencia discursiva ya lograda por el alumno. Resuelto vía LG-100, pendiente de ratificación formal en EN-000.",
+      "sous_domaines": ["EN-810","EN-820","EN-830","EN-840"]
+    }
+  ],
+
+  "livrables_declarativos_ya_redactados": [
+    { "id": "EN-411", "dominio": "EN-400", "nombre": "Le pluriel régulier et irrégulier", "tipo": "piloto" }
+  ],
+
+  "potencial_expansion_calculado": {
+    "nota": "Cuenta de cuántos dominios dependen, directa o indirectamente, de cada uno — ya incluye la resolución de EN-700/EN-800.",
+    "EN-300": 5,
+    "EN-400": 4,
+    "EN-500": 3,
+    "EN-600": 2,
+    "EN-700": 1,
+    "EN-800": 0
+  },
+
+  "notas_de_implementacion": [
+    "Este archivo se usa junto a MC-OPERACIONAL.json solo cuando idioma_activo = EN.",
+    "No confundir con EN-000: este documento es datos puros para MC-009, EN-000 sigue siendo la fuente canónica con prosa, Genèse y Frontières.",
+    "Grafo completo y sin cabos sueltos: EN-100 a EN-800 con Type+Prérequis resueltos. Pendiente únicamente trasladar la resolución de EN-700/EN-800 al documento EN-000 original para que ambos queden sincronizados."
+  ]
+}

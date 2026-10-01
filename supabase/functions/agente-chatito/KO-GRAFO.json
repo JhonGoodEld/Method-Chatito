@@ -1,0 +1,83 @@
+{
+  "documento": "KO-GRAFO",
+  "version": "1.0.0",
+  "idioma": "KO",
+  "arquitectura_fuente": "KO-000 v0.1.1 (tabla canónica sección 9.0 ya formalizada por el usuario, la más madura de las tres)",
+  "proposito": "Extracto de datos puro para el motor de secuenciación MC-009. Se carga junto a MC-OPERACIONAL.json cuando el idioma activo del alumno es coreano.",
+  "estado_validacion": "CERRADO. Tomado directamente de la tabla canónica 9.0 de KO-000, ya marcada ahí como fuente única de verdad — no requiere auditoría adicional.",
+
+  "dominios": [
+    { "id": "KO-100", "nombre": "Phonologie", "nivel": "Ressource", "nature": "transversal", "prerequis": [], "sous_domaines": ["KO-110","KO-120","KO-130","KO-140","KO-150","KO-160","KO-170","KO-180","KO-190"] },
+    { "id": "KO-200", "nombre": "Système d'Écriture", "nivel": "Ressource", "nature": "transversal", "prerequis": [], "sous_domaines": ["KO-210","KO-220","KO-230","KO-240","KO-250","KO-260","KO-270","KO-280","KO-290"] },
+    { "id": "KO-300", "nombre": "Lexique", "nivel": "Ressource", "nature": "transversal", "prerequis": [], "sous_domaines": ["KO-310","KO-320","KO-330","KO-340","KO-350","KO-360","KO-370","KO-380"] },
+    {
+      "id": "KO-400",
+      "nombre": "Système morphologique et nominal",
+      "nivel": "Système",
+      "nature": "sequentiel",
+      "prerequis": ["KO-300"],
+      "nota_estructural": "Hermano de KO-500, no cadena — ambos dependen únicamente de KO-300. MC-009 calculará el potencial de expansión de cada uno para elegir la rama activa; el otro se vuelve détour obligatorio antes de que KO-600 sea accesible (KO-600 exige ambos).",
+      "sous_domaines": ["KO-410","KO-420","KO-430","KO-440","KO-460"],
+      "identifiants_retires": [
+        { "id": "KO-450", "absorbe_par": "KO-420" },
+        { "id": "KO-470", "absorbe_par": "KO-420" },
+        { "id": "KO-480", "absorbe_por": "table Frontières de KO-400" }
+      ]
+    },
+    {
+      "id": "KO-500",
+      "nombre": "Système verbal",
+      "nivel": "Système",
+      "nature": "sequentiel",
+      "prerequis": ["KO-300"],
+      "nota_tipologica": "Independiente de KO-400 (ver nota en KO-400) — el verbo coreano no marca acuerdo de género/número con el sujeto, a diferencia de FR-500/EN-500.",
+      "sous_domaines": ["KO-510","KO-520","KO-530","KO-540","KO-550","KO-560","KO-570","KO-580","KO-590"]
+    },
+    {
+      "id": "KO-600",
+      "nombre": "Syntaxe",
+      "nivel": "Système",
+      "nature": "sequentiel",
+      "prerequis": ["KO-400", "KO-500"],
+      "sous_domaines": ["KO-610","KO-620","KO-630","KO-640"],
+      "identifiants_retires": [{ "id": "KO-680", "absorbe_por": "table Frontières de KO-600" }]
+    },
+    {
+      "id": "KO-700",
+      "nombre": "Discours",
+      "nivel": "Communication",
+      "nature": "sequentiel",
+      "prerequis": ["KO-600"],
+      "sous_domaines": ["KO-710","KO-720","KO-730","KO-740","KO-750","KO-760","KO-770"],
+      "identifiants_retires": [{ "id": "KO-780", "absorbe_por": "table Frontières de KO-700" }]
+    },
+    {
+      "id": "KO-800",
+      "nombre": "Pragmatique et communication",
+      "nivel": "Communication",
+      "nature": "sequentiel",
+      "prerequis": ["KO-700"],
+      "sous_domaines": ["KO-810","KO-820","KO-830","KO-840","KO-850","KO-860","KO-870"]
+    }
+  ],
+
+  "livrables_declarativos_ya_redactados": [
+    { "id": "KO-511", "dominio": "KO-500", "tipo": "con evidencia real registrada — caso donde se detectó y corrigió un error de secuenciación previo" }
+  ],
+
+  "potencial_expansion_calculado": {
+    "nota": "Cuenta de dominios que dependen, directa o indirectamente, de cada uno. KO-400 y KO-500 quedan empatados — MC-009 decide la rama activa por su propio algoritmo (secciones 9-10), no por este número.",
+    "KO-300": 5,
+    "KO-400": 3,
+    "KO-500": 3,
+    "KO-600": 2,
+    "KO-700": 1,
+    "KO-800": 0
+  },
+
+  "notas_de_implementacion": [
+    "Este archivo se usa junto a MC-OPERACIONAL.json solo cuando idioma_activo = KO.",
+    "Es el grafo más confiable de los tres — viene de una tabla ya marcada como canónica por el propio usuario, sin necesidad de auditoría adicional de este lado.",
+    "El backend debe implementar la lógica de 'détour' (ver mecanismo_detour en MC-OPERACIONAL) específicamente para el par KO-400/KO-500 — es el único caso de hermanos reales entre los tres idiomas."
+  ]
+}

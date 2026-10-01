@@ -1,0 +1,56 @@
+{
+  "documento": "FR-GRAFO",
+  "version": "1.0.0",
+  "idioma": "FR",
+  "arquitectura_fuente": "FR-000 v1.1.0 (alineada a plantilla madura, dependencia FR-500 auditada y confirmada)",
+  "proposito": "Extracto de datos puro para el motor de secuenciación MC-009. Se carga junto a MC-OPERACIONAL.json cuando el idioma activo del alumno es francés.",
+  "estado_validacion": "Tabla de dependencias (Type+Prérequis) CERRADA y confirmada por auditoría explícita. Lista de sous_domaines PARCIAL — solo incluye los ya documentados en la tabla de Frontières de FR-000; el resto no se ha declarado formalmente todavía.",
+
+  "dominios": [
+    { "id": "FR-100", "nombre": "Phonologie", "nivel": "Ressource", "nature": "transversal", "prerequis": [], "sous_domaines": [], "lista_sous_domaines_incompleta": true },
+    { "id": "FR-200", "nombre": "Orthographe", "nivel": "Ressource", "nature": "transversal", "prerequis": [], "sous_domaines": ["FR-280"], "lista_sous_domaines_incompleta": true },
+    { "id": "FR-300", "nombre": "Lexique", "nivel": "Ressource", "nature": "transversal", "prerequis": [], "sous_domaines": ["FR-310","FR-340","FR-380"], "lista_sous_domaines_incompleta": true },
+    {
+      "id": "FR-400",
+      "nombre": "Système nominal",
+      "nivel": "Système",
+      "nature": "sequentiel",
+      "prerequis": ["FR-300"],
+      "sous_domaines": ["FR-410","FR-420","FR-440","FR-460","FR-480"],
+      "lista_sous_domaines_incompleta": true,
+      "identifiants_retires": [{ "id": "FR-470", "absorbe_par": "FR-420" }]
+    },
+    {
+      "id": "FR-500",
+      "nombre": "Système verbal",
+      "nivel": "Système",
+      "nature": "sequentiel",
+      "prerequis": ["FR-300", "FR-400"],
+      "nota_tipologica": "Dependencia CONFIRMADA por auditoría (FR-000 v1.1.0): el acuerdo sujeto-verbo francés consume morfología nominal (FR-410) y mecanismo pronominal (FR-440) — no es un arrastre sin examinar. Divergencia frente a KO-500 (independiente), paralela a EN-500.",
+      "sous_domaines": ["FR-530","FR-531","FR-550","FR-560"],
+      "lista_sous_domaines_incompleta": true
+    },
+    { "id": "FR-600", "nombre": "Syntaxe", "nivel": "Système", "nature": "sequentiel", "prerequis": ["FR-400", "FR-500"], "sous_domaines": ["FR-660"], "lista_sous_domaines_incompleta": true },
+    { "id": "FR-700", "nombre": "Discours", "nivel": "Communication", "nature": "sequentiel", "prerequis": ["FR-600"], "sous_domaines": ["FR-720","FR-740"], "lista_sous_domaines_incompleta": true },
+    { "id": "FR-800", "nombre": "Pragmatique et communication", "nivel": "Communication", "nature": "sequentiel", "prerequis": ["FR-700"], "sous_domaines": ["FR-810"], "lista_sous_domaines_incompleta": true }
+  ],
+
+  "livrables_declarativos_ya_redactados": [
+    { "id": "FR-531", "dominio": "FR-500", "sous_domaine": "FR-531 (Indicatif)", "tipo": "con evidencia real registrada" }
+  ],
+
+  "potencial_expansion_calculado": {
+    "nota": "Cuenta de dominios que dependen, directa o indirectamente, de cada uno.",
+    "FR-300": 5,
+    "FR-400": 4,
+    "FR-500": 3,
+    "FR-600": 2,
+    "FR-700": 1,
+    "FR-800": 0
+  },
+
+  "notas_de_implementacion": [
+    "Este archivo se usa junto a MC-OPERACIONAL.json solo cuando idioma_activo = FR.",
+    "Tabla de dependencias lista para producción. La lista de sous_domaines es parcial — completar sin bloquear el uso del grafo para secuenciación de dominios (MC-009 solo necesita el nivel de dominio XX-X00, no el de sous-domaine, para su algoritmo principal)."
+  ]
+}

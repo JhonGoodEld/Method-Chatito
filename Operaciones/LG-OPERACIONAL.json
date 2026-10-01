@@ -1,0 +1,106 @@
+{
+  "documento": "LG-OPERACIONAL",
+  "version": "1.1.0",
+  "historial": [
+    { "version": "1.0.0", "cambio": "Versión inicial." },
+    { "version": "1.1.0", "cambio": "Modo docente_crear (ver MC-OPERACIONAL v1.2.0, modos_operacion.docente_crear) exige validación humana en las 6 étapes, no solo en 4 y 6. Ver seguro_validacion_paso_a_paso. Modo no probado todavía — cambio de diseño, no de evidencia empírica." }
+  ],
+  "proposito": "Capa operativa derivada de la saga LG-00X (arquitectura general de idiomas). A diferencia de MC-OPERACIONAL (que gobierna la ejecución de lecciones), este documento se carga SOLO cuando el agente debe generar o validar arquitectura nueva para un idioma sin arquitectura previa (ej. árabe). No se usa durante la ejecución normal de lecciones.",
+  "fuente_canonica": "https://github.com/JhonGoodEld/Method-Chatito (carpeta Specification/LG), basado en LG-000 v0.1.4+ y LG-100 v0.1.6",
+
+  "principios_estructurales": {
+    "P1_una_conocimiento_un_solo_lugar": {
+      "regla": "Cada unidad de conocimiento lingüístico vive en exactamente un dominio. Prohibido duplicar la misma unidad en dos dominios distintos.",
+      "corolario_categoria_interfaces": "Los dominios de tipo 'Interfaces' quedan descartados como categoría válida — confirmado empíricamente por el retiro de KO-480/680/780, que no generaron ningún Livrable futuro propio.",
+      "corolario_redaccional": "Ningún documento de dominio (XX-X00) puede justificarse comparándose con otro idioma (ej. 'sans équivalent en français/coréen'). Solo se justifica por su propia estructura interna y sus fuentes. Única excepción: una divergencia estructural verificable documentada en el XX-000 raíz, con consecuencia real en el grafo de MC-009 (ej. EN-500 sí depende de EN-400, KO-500 no — divergencia tipológica real, no decorativa)."
+    },
+    "P3_jerarquia_por_niveles_abstraccion": {
+      "regla": "Todo dominio se clasifica en uno de 3 niveles: Ressource, Système, Communication. No se mezclan niveles dentro de un mismo dominio."
+    },
+    "P4_dependencias_minimas": {
+      "regla": "Un dominio declara solo los prerrequisitos estrictamente necesarios. No agregar dependencias 'por si acaso' o por simetría con otro idioma."
+    },
+    "P5_escalabilidad": {
+      "regla": "La numeración y estructura deben soportar la adición de un idioma nuevo sin romper los ya existentes."
+    },
+    "P6_divergencia_tipologica_legitima": {
+      "regla": "Una divergencia real entre idiomas (ej. prerrequisitos distintos) no es un error a corregir por defecto — puede ser la excepción correcta si tiene justificación tipológica verificable. Confirmado por el caso EN-500/FR-500 (dependen de X-400 por concordancia sujeto-verbo real) vs KO-500 (no depende, por ausencia de esa concordancia en coreano)."
+    },
+    "P8_catalogar_por_patron_no_lista_exhaustiva": {
+      "regla": "Dominios con inventario potencialmente infinito de excepciones (ej. ortografía) se organizan por patrones/categorías, nunca como lista enciclopédica exhaustiva."
+    }
+  },
+
+  "taxonomia": {
+    "niveles": ["Ressource", "Système", "Communication"],
+    "estructura_documento_raiz_XX_000": {
+      "obligatorio": [
+        "tabla_de_dominios_con_type_y_prerequis",
+        "tabla_de_Frontieres",
+        "seccion_Genese",
+        "campo_Nature_por_dominio (sequentiel/transversal)"
+      ],
+      "nota": "La sección Genèse y el campo Nature son exigencias retroactivas — todo XX-000 nuevo debe incluirlas desde el inicio; los ya existentes (FR-000, KO-000) las recibieron después."
+    },
+    "estructura_documento_dominio_XX_X00": "Cada dominio hereda el nivel de abstracción de su raíz y declara sus propios sous-domaines (XX-XY0) según necesidad — no hay número fijo obligatorio de sous-domaines."
+  },
+
+  "procedimiento_disección_lingüística": {
+    "fuente": "LG-100 — Principes de Dissection Linguistique",
+    "regla_de_no_linealidad": "El procedimiento no es estrictamente secuencial: la Étape 6 (Rédaction) puede revelar puntos críticos que las Étapes 2-3 no detectaron, obligando a volver atrás (confirmado por la corrección EN-320→EN-310 durante la redacción de EN-300).",
+    "etapas": [
+      {
+        "n": 1,
+        "nombre": "inventaire",
+        "regla_entrada_canonica": "Es el punto de entrada OBLIGATORIO y verificable de cualquier arquitectura nueva. Ningún XX-000/XX-X00 puede redactarse sin haber pasado antes por las Étapes 1 a 4."
+      },
+      { "n": 2, "nombre": "points_critiques" },
+      { "n": 3, "nombre": "recherche", "regla": "Fuentes externas VALIDAN la estructura propuesta, nunca la IMPONEN." },
+      {
+        "n": 4,
+        "nombre": "decision",
+        "regla": "Un ID/número disponible no justifica por sí solo crear un dominio ahí. La existencia de espacio en la numeración no es argumento estructural."
+      },
+      { "n": 5, "nombre": "numerotation" },
+      { "n": 6, "nombre": "redaction" }
+    ],
+    "orden_construccion_vs_orden_enseñanza": {
+      "regla_critica": "El orden en que se REDACTAN los documentos de dominio (orden de construcción, taxonómico, ascendente 100→800, gobernado por qué documento cita a cuál) es un problema DISTINTO del orden en que se ENSEÑAN esos dominios al alumno (orden de enseñanza, exclusivo de MC-009). Nunca usar MC-009 para decidir qué documento redactar después, ni usar el orden de construcción para decidir qué enseñar primero.",
+      "excepcion_de_orden_de_construccion": "El documento XX-000 raíz debe redactarse PRIMERO, inmediatamente después de las Étapes 1-5 — no al final. Su contenido (mapa, Frontières, numeración, Genèse) es el producto directo de esas etapas."
+    }
+  },
+
+  "hallazgos_a_aplicar": [
+    { "id": "A", "regla": "No importar categorías/dominios de otra lengua por simetría. Cada idioma se diseca por sus propios puntos críticos." },
+    { "id": "B", "regla": "Un fenómeno transversal tiene un único dominio propietario, aunque se manifieste en varios dominios sistémicos." },
+    { "id": "C", "regla": "Separar fonología y escritura como dominios distintos es necesario cuando la escritura no mapea de forma simple al fonema (no es automático por defecto ni exclusivo de ninguna lengua en particular)." },
+    { "id": "D", "regla": "Transversalidad no significa ausencia de arquitectura propia — un dominio transversal igual necesita su propia estructura interna." },
+    { "id": "E", "regla": "Las dependencias internas de un dominio no siempre forman una cadena lineal; pueden ser hermanas (ej. KO-400/KO-500 no dependen entre sí, ambas dependen solo de KO-300)." },
+    { "id": "F", "regla": "La frontera entre dos dominios se decide por la pregunta que cada uno responde, no por el nombre o precedente de otro idioma." },
+    { "id": "G", "regla": "El procedimiento de 6 pasos (inventaire→points_critiques→recherche→decision→numerotation→redaction) es obligatorio y trazable." },
+    { "id": "H", "regla": "Fuentes externas validan la estructura, nunca la imponen desde fuera." },
+    { "id": "I", "regla": "Que un ID esté disponible en la numeración no es justificación para crear un dominio ahí." },
+    { "id": "J", "regla": "La asimetría entre idiomas puede ser correcta y no requiere forzarse a simetría." }
+  ],
+
+  "pendientes_que_requieren_evidencia_futura": [
+    "Divergencia entre idiomas no es error automático — puede revelar que una decisión anterior estaba mal justificada (vínculo con la auditoría FR-500/KO-500, ya resuelta en v1.0 de EN pero como heurística general sigue vigente para futuros idiomas).",
+    "Heurística: 'Livrables futurs vacío' en un dominio es señal de que no posee conocimiento propio y es candidato a retiro (confirmado 3 veces: KO-480/680/780).",
+    "LG-S07 (hipótesis no confirmada): LG debería eventualmente alimentar con datos declarativos estandarizados no solo a MC-008, sino también a MC-004/005/009, hoy sin un esquema de interfaz de datos formal — candidato a futuro LG-150 o sección nueva de LG-000.",
+    "El 'principio de no transposición' (no asumir que la lengua nueva tiene las categorías de una lengua ya conocida) es válido no solo para fonología (MC-008) sino como principio general de inferencia arquitectónica en LG-100."
+  ],
+
+  "seguro_validacion_paso_a_paso": {
+    "origen": "MC-OPERACIONAL v1.2.0, modos_operacion.docente_crear — reemplaza la regla anterior de 'solo Étapes 4 y 6' por validación en las 6 étapes.",
+    "regla": "NINGUNA de las 6 étapes (inventaire, points_critiques, recherche, decision, numerotation, redaction) avanza a la siguiente sin validación explícita del docente. Cada étape queda registrada con validado_por y validado_en antes de generar la siguiente.",
+    "seguro_anti_aprobacion_sin_lectura": "Requiere scroll confirmado hasta el final (no solo apariencia de barra completa) Y tiempo mínimo de lectura proporcional a la extensión del contenido — ambas condiciones, verificadas también en el backend (nunca confiar solo en el frontend). Ver detalle en MC-OPERACIONAL.modos_operacion.docente_crear."
+  },
+
+  "notas_de_implementacion_para_el_agente": [
+    "Este documento se carga SOLO en modo 'generación/validación de arquitectura nueva', nunca durante la ejecución normal de una lección (eso lo gobierna MC-OPERACIONAL).",
+    "El resultado de aplicar este procedimiento a un idioma nuevo es siempre un BORRADOR — requiere confirmación humana en CADA étape (ver seguro_validacion_paso_a_paso, v1.1.0) antes de considerarse arquitectura canónica.",
+    "Al generar un XX-000 nuevo, el agente debe incluir obligatoriamente la sección Genèse y el campo Nature por dominio desde el primer borrador.",
+    "El agente no debe generar afirmaciones comparativas cruzadas hacia otros idiomas dentro de un documento de dominio (ver corolario_redaccional de P1).",
+    "Modo docente_crear (y por tanto este documento) no ha sido ejecutado ni probado — queda pendiente por tiempo indefinido, según decisión explícita del usuario tras la piloto FR-411."
+  ]
+}

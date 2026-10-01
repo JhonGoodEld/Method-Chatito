@@ -1,0 +1,451 @@
+{
+  "documento": "MC-OPERACIONAL",
+  "version": "1.4.0",
+  "historial": [
+    {
+      "version": "1.0.0",
+      "cambio": "Versión inicial."
+    },
+    {
+      "version": "1.1.0",
+      "cambio": "Tras la ejecución piloto FR-411: (a) regla de scope de corrección (el agente solo corrige el objetivo de la unidad activa, nunca dominios no enseñados); (b) regla de agrupación de evidencia por turno (agrupar niveles que no dependan de corrección previa, nunca reordenar étapes); (c) motor_reactivacion formalizado en consolidacion_continua; (d) puntaje_leccion añadido a evidencia_y_estado, con alcance acotado (ver nota_MC002_S17)."
+    },
+    {
+      "version": "1.2.0",
+      "cambio": "Formalización de modos_operacion (estudiante, docente_aprender, docente_crear), a partir del diagrama de flujo de navegación de la app. docente_crear queda explícitamente marcado como no probado, pendiente por tiempo indefinido."
+    },
+    {
+      "version": "1.3.0",
+      "cambio": "Preparación para la Edge Function: (a) CORRECCIÓN de un error introducido en v1.0.0: 'etapas_en_orden' mezclaba el ciclo de 12 étapes con los números de SECCIÓN 14/15/17 de MC-001 y omitía corrección y transformación — reemplazada por ciclo_12_etapas + precisiones_mc001 + plan_ejecucion; (b) reglas operativas v1 de secuenciación (accesibilidad, dominio agotado, bloqueo por falta de contenido, política de desempate PROPUESTA); (c) regla provisional de transición de estados; (d) parámetros numéricos del motor de reactivación y factor de completitud como datos, no como texto."
+    },
+    {
+      "version": "1.4.0",
+      "cambio": "Contrastado con MC-001 v1.0.2 real: (a) numeración de étapes = la de MC-001 (8–19, igual a su número de sección), con 'posicion' 1–12 del ciclo; (b) corrección DIFERIDA: la étape 17 corrige juntas las producciones de las étapes 15 y 16 (MC-001 §17 fase 1), ya no después de cada nivel; (c) niveau 3 = production libre (categoría libre); (d) descripciones de los 3 niveaux de MC-001 §15. Se retira la marca 'a ratificar' sobre 14/15/17: confirmado."
+    }
+  ],
+  "proposito": "Capa operativa derivada de la saga MC-00X (Método Chatito). Contiene solo las reglas que el agente de IA debe aplicar en tiempo de ejecución, sin la justificación narrativa ni el historial de decisiones que sí viven en los documentos MC originales del repositorio. Es agnóstica de idioma: se usa igual para FR, KO, EN o cualquier arquitectura futura.",
+  "fuente_canonica": "https://github.com/JhonGoodEld/Method-Chatito (carpeta Specification/MC)",
+  "principios_rectores": {
+    "P7_progresion_por_profundidad": {
+      "regla": "La profundidad de una unidad transformacional se gestiona vía MC-009, no vía intuición del agente en el momento."
+    },
+    "P8_declarativo_procedimental": {
+      "regla": "El agente NUNCA decide qué existe en la lengua (eso vive en las tablas XX-X00 declarativas). El agente solo decide CÓMO enseñarlo, dentro de las reglas de esta capa."
+    },
+    "P9_ejecucion_interactiva": {
+      "regla": "Un documento de lección describe; el agente ejecuta. Prohibido: (a) que el agente reescriba o reinterprete la definición declarativa durante la conversación, (b) que la conversación misma se convierta en la fuente de la definición.",
+      "evidencia_previa": "Nunca se descarta evidencia ya recolectada, aunque cambie el estado del alumno.",
+      "reactivacion": "Es un evento posterior y distinto, gobernado por MC-006, no por la ejecución de la lección en curso."
+    },
+    "P10_separacion_declaracion_secuenciamiento": {
+      "regla": "El ID o número de un livrable (ej. KO-511, EN-411) NO determina su prioridad ni orden de enseñanza. El orden SIEMPRE se decide vía el grafo de MC-009, nunca por numeración ni por razonamiento libre del LLM.",
+      "error_historico_a_evitar": "No elegir una lección 'porque existe' o 'porque es autocontenida' — ese razonamiento viola este principio aunque parezca práctico."
+    }
+  },
+  "leccion": {
+    "fuente": "MC-001 — Structure Standard d'une Leçon v1.0.2 (contrastado con el documento real).",
+    "regla_maestra": "No se avanza a la etapa N+1 sin haber completado y declarado la etapa N. El agente no puede saltar a producción/ejercicios antes de declarar el conocimiento completo.",
+    "ciclo_12_etapas": [
+      {
+        "n": 8,
+        "posicion": 1,
+        "nombre": "description",
+        "tipo": "presentacion"
+      },
+      {
+        "n": 9,
+        "posicion": 2,
+        "nombre": "utilisation",
+        "tipo": "presentacion"
+      },
+      {
+        "n": 10,
+        "posicion": 3,
+        "nombre": "structure",
+        "tipo": "presentacion"
+      },
+      {
+        "n": 11,
+        "posicion": 4,
+        "nombre": "expressions_frequentes",
+        "tipo": "presentacion"
+      },
+      {
+        "n": 12,
+        "posicion": 5,
+        "nombre": "erreurs_frequentes",
+        "tipo": "presentacion"
+      },
+      {
+        "n": 13,
+        "posicion": 6,
+        "nombre": "exemples",
+        "tipo": "presentacion"
+      },
+      {
+        "n": 14,
+        "posicion": 7,
+        "nombre": "notes_et_exceptions",
+        "tipo": "presentacion",
+        "incluye": "transformations_prevues (declarativo)"
+      },
+      {
+        "n": 15,
+        "posicion": 8,
+        "nombre": "exercices_guides",
+        "tipo": "produccion",
+        "incluye": "formes_evidence_attendues (declarativo, obligatorio)",
+        "niveles": {
+          "1": "Transformation — transformar frases dadas según una consigna precisa (aplicación directa de la regla)",
+          "2": "Phrases — construir frases propias a partir de elementos dados (contextualización guiada)",
+          "3": "Production libre — producir libremente, sin soporte dado (escrita, oral, o foto de producción manuscrita)"
+        }
+      },
+      {
+        "n": 16,
+        "posicion": 9,
+        "nombre": "production_ecrite",
+        "tipo": "produccion"
+      },
+      {
+        "n": 17,
+        "posicion": 10,
+        "nombre": "correction_detaillee",
+        "tipo": "correccion"
+      },
+      {
+        "n": 18,
+        "posicion": 11,
+        "nombre": "transformation",
+        "tipo": "produccion"
+      },
+      {
+        "n": 19,
+        "posicion": 12,
+        "nombre": "vocabulaire",
+        "tipo": "presentacion"
+      }
+    ],
+    "precisiones_mc001": {
+      "etape_14_transformations_prevues": "Declarativo: anticipa las transformaciones que se ejecutarán en la étape 18. No las ejecuta.",
+      "etape_15_formes_evidence_attendues": "Declarativo y OBLIGATORIO: la LECCIÓN (livrable) precisa, por nivel, el tipo exacto de producción exigida, antes de ejecutar. Si el livrable no lo declara, el agente lo señala y usa los ejemplos de MC-001 §15.",
+      "etape_17_correction_detaillee": {
+        "fases_obligatorias_en_orden": [
+          "collecte_evidence",
+          "correction_differee",
+          "diagnostic"
+        ],
+        "fuentes": "Las producciones de las étapes 15 y 16 (MC-001 §17, fase 1).",
+        "regla": "Ninguna fase empieza antes de que termine la anterior. La corrección es frase por frase con explicación gramatical; el diagnóstico clasifica cada error con la tipología de MC-002 §13."
+      }
+    },
+    "plan_ejecucion": {
+      "nota": "Orden de ENTREGA en turnos. Agrupa sin reordenar el ciclo. Producciones con correccion 'diferida' acumulan sus errores hasta el paso de corrección (étape 17).",
+      "etapa_correccion": 17,
+      "pasos": [
+        {
+          "paso": "presentacion",
+          "etapas": [
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14
+          ],
+          "tipo": "presentacion",
+          "declara_antes_de_producir": [
+            "etape_14_transformations_prevues",
+            "etape_15_formes_evidence_attendues"
+          ]
+        },
+        {
+          "paso": "exercices_n1_n2",
+          "etapas": [
+            15
+          ],
+          "tipo": "produccion",
+          "niveles": [
+            1,
+            2
+          ],
+          "categoria": "guiada",
+          "correccion": "diferida"
+        },
+        {
+          "paso": "exercices_n3",
+          "etapas": [
+            15
+          ],
+          "tipo": "produccion",
+          "niveles": [
+            3
+          ],
+          "categoria": "libre",
+          "correccion": "diferida"
+        },
+        {
+          "paso": "production_ecrite",
+          "etapas": [
+            16
+          ],
+          "tipo": "produccion",
+          "niveles": [
+            null
+          ],
+          "categoria": "libre",
+          "correccion": "diferida"
+        },
+        {
+          "paso": "correction",
+          "etapas": [
+            17
+          ],
+          "tipo": "correccion",
+          "fuentes": [
+            "exercices_n1_n2",
+            "exercices_n3",
+            "production_ecrite"
+          ]
+        },
+        {
+          "paso": "transformation",
+          "etapas": [
+            18
+          ],
+          "tipo": "produccion",
+          "niveles": [
+            null
+          ],
+          "categoria": "guiada",
+          "correccion": "inmediata",
+          "nota": "MC-001 no especifica si la étape 18 se corrige; se aplica la regla general del 100% de J. Good. A ratificar."
+        },
+        {
+          "paso": "vocabulaire",
+          "etapas": [
+            19
+          ],
+          "tipo": "presentacion",
+          "cierra_unidad": true
+        }
+      ]
+    },
+    "numeracion": "n = número de étape de MC-001, que coincide con su número de sección (8–19); posicion = lugar en el ciclo de 12 (MC-000 §10). Toda referencia 'étape N' en documentos, evidencia y registros usa n."
+  },
+  "evidencia_y_estado": {
+    "fuente": "MC-002 — Modèle d'Apprentissage",
+    "estados_posibles": [
+      "non_acquis",
+      "en_cours",
+      "acquis",
+      "consolide"
+    ],
+    "principio_evidencia_no_igual_estado": "El estado es una inferencia; la evidencia es el registro bruto que la sustenta. La evidencia NUNCA se borra ni se sobrescribe, aunque el estado cambie.",
+    "modelo_observacion": {
+      "pasos": 8,
+      "regla": "Un cambio de estado requiere haber completado el modelo de observación de 8 pasos, no una sola respuesta correcta o incorrecta."
+    },
+    "no_regresion_automatica": "Una respuesta incorrecta puntual NO degrada automáticamente el estado del alumno; requiere el diagnóstico completo de la etapa 17.",
+    "formula_consolidacion": "Se descubre empíricamente por idioma/alumno — el agente no debe asumir un umbral fijo universal.",
+    "regla_de_scope_de_correccion": {
+      "origen": "Piloto FR-411 (v1.1.0) — el alumno produjo estructuras de dominios no enseñados aún (ej. conjugación verbal en una lección de género nominal).",
+      "regla": "El agente corrige ÚNICAMENTE el objetivo declarado de la unidad activa. Errores de otros dominios se observan y se registran como evidencia (nunca se descartan, Principio 9), pero NO se corrigen ni se evalúan fuera de secuencia — evita violar el Principio 7 (profundidad antes que anchura)."
+    },
+    "puntaje_leccion": {
+      "origen": "Piloto FR-411 (v1.1.0) — necesario como señal de entrada para consolidacion_continua.motor_reactivacion, NO como evaluación pedagógica.",
+      "nota_MC002_S17": "MC-002 §17 prohíbe explícitamente reducir la evaluación pedagógica a una nota aditiva de sus 6 dimensiones diagnósticas (exactitude, adéquation, maîtrise structurelle, autonomie, stabilité, flexibilité). Este puntaje NO es esa nota — es una métrica de alcance acotado, exclusiva para alimentar la priorización de reactivación de MC-006. La decisión pedagógica de MC-002 §18 sigue siendo cualitativa y nunca se sustituye por este número.",
+      "formula": "puntaje_leccion = (peso_produccion_espontanea × %acierto_produccion_libre) + (peso_produccion_guiada × %acierto_ejercicios_y_transformacion)",
+      "pesos_iniciales_a_calibrar": {
+        "peso_produccion_espontanea": 0.6,
+        "peso_produccion_guiada": 0.4,
+        "justificacion": "MC-002 §26 (Principe de production authentique): la producción espontánea mide mejor la mobilización real que la sollicitée. Confirmado empíricamente en FR-411: 100% en producción libre vs. 25% en ejercicio guiado al primer intento — evidencias de naturaleza distinta, no equivalentes."
+      },
+      "regla_de_calculo_v1": "Se usa la última evidencia ANTERIOR a la corrección de cada paso (primer intento completo). Guiada: correctos / total_pedido (denominador del sistema, no del LLM). Libre: correctos / ocurrencias del objetivo. Si una categoría no tiene datos, se renormalizan los pesos."
+    },
+    "regla_transicion_estados_v1": {
+      "estado": "Regla operativa PROVISIONAL mientras el modelo de 8 pasos no esté formalizado.",
+      "non_acquis_a_en_cours": "Al iniciar la unidad (MC-009 la selecciona).",
+      "en_cours_a_acquis": "Al completar el ciclo MC-001 con todos los umbrales superados (completitud 80% y corrección 100%).",
+      "a_consolide": "NO automático en v1: exige evidencia de reactivación fuera de la lección original (MC-002 §8.4, MC-006). Pendiente.",
+      "nunca": "Ninguna transición es regresiva de forma automática (MC-002 §29)."
+    }
+  },
+  "transformacion": {
+    "fuente": "MC-004 — Consolidation par Transformation",
+    "mecanismos": [
+      "controlee",
+      "guidee",
+      "autonome",
+      "inverse",
+      "chainage",
+      "croisee"
+    ],
+    "unidad_transformacional": "Entidad formal mínima sobre la que se aplica un mecanismo de transformación; es el objeto que lleva el estado de MC-002."
+  },
+  "vocabulario": {
+    "fuente": "MC-005 — Gestion du Vocabulaire",
+    "criterio_priorizacion": [
+      "frecuencia",
+      "utilidad",
+      "reutilizacion"
+    ],
+    "distincion": "activo (el alumno debe producirlo) vs pasivo (el alumno debe reconocerlo)"
+  },
+  "consolidacion_continua": {
+    "fuente": "MC-006 — Consolidation Continue",
+    "estrategias": [
+      "hasard",
+      "dependance",
+      "erreurs_frequentes",
+      "temporelle"
+    ],
+    "nota": "Una 'ruleta' de repaso aleatorio es solo UNA implementación posible de la estrategia 'hasard', no la estrategia completa.",
+    "motor_reactivacion": {
+      "origen": "Formalizado en v1.1.0, cierra 3 ítems del roadmap de MC-006 §30 (representación formal de prioridad, combinación de las 4 estrategias, cálculo del intervalo entre reactivaciones).",
+      "principio_no_negociable": "El cálculo de prioridad de reactivación NUNCA sobrescribe el campo 'estado' de una unidad directamente — viola MC-002 §29 y MC-006 §25.5 (régression artificielle). Solo dispara una reactivación real; el estado únicamente cambia cuando esa reactivación produce evidencia nueva, evaluada por el modelo de 8 pasos de MC-002.",
+      "hasard": {
+        "tratamiento": "Sorteo INDEPENDIENTE de la fórmula ponderada, no una de las señales sumadas. Con probabilidad p_azar en cada sesión, se ignora la prioridad calculada y se reactiva una unidad al azar entre las ya consolidadas.",
+        "p_azar_inicial_a_calibrar": 0.08,
+        "justificacion": "Sumarlo a la fórmula le daría peso conceptual de 'evidencia de olvido' que no tiene — MC-006 §11 solo pide que exista, sin dominar la selección."
+      },
+      "formula_prioridad_reactivacion": {
+        "entradas": {
+          "errores_en_unidades_dependientes": "Conteo de diagnósticos en lecciones POSTERIORES que señalan esta unidad como causa del error (MC-002 §15).",
+          "profundidad_de_rama": "Cuántas unidades subsecuentes ya se enseñaron desde que esta unidad se consolidó (vía XX-GRAFO) — implementa MC-006 §12 (révision par dépendance).",
+          "dias_desde_ultima_evidencia": "Días desde la fila más reciente en evidencia para esta unidad — implementa MC-006 §14 (révision temporelle), como curva creciente, no lineal fija."
+        },
+        "formula": "prioridad = (w_errores × normalizar(errores_en_unidades_dependientes)) + (w_dependencia × normalizar(profundidad_de_rama)) + (w_tiempo × curva_creciente(dias_desde_ultima_evidencia))",
+        "pesos_iniciales_a_calibrar": {
+          "w_errores": 0.5,
+          "w_dependencia": 0.2,
+          "w_tiempo": 0.3,
+          "justificacion": "Orden de prioridad según MC-006 §25.3 (los errores pueden aumentar prioridad, no pueden monopolizarla) y el principio de profundidad de MC-000 §8.7 — errores activos sobre conocimiento previo bloquean avance real, por eso pesan más que el simple paso del tiempo."
+        },
+        "disparo": "Si prioridad supera un umbral configurable, se genera una reactivación real (MC-006 §9: forma distinta a la lección original, nunca repetición mecánica — prohibido por §25.1).",
+        "parametros_normalizacion_iniciales_a_calibrar": {
+          "tope_errores": 5,
+          "tope_profundidad": 10,
+          "tau_dias": 14,
+          "umbral_disparo": 0.5,
+          "definiciones": "normalizar(x) = min(x / tope, 1); curva_creciente(dias) = 1 - exp(-dias / tau_dias)."
+        }
+      },
+      "candidatos_v1": "Unidades en estado acquis o consolide, excluyendo la recién completada. v1.1.0 decía 'consolidadas'; se amplía a acquis porque reactivar lo adquirido es el camino hacia consolidé (MC-006 §5). A ratificar.",
+      "momento_de_evaluacion_v1": "Al cierre de cada unidad, no en cada mensaje, para no interrumpir la lección en curso.",
+      "salida_v1": "Solo una SUGERENCIA de reactivación; la lección de reactivación (forma distinta, MC-006 §9) no está implementada en v1."
+    }
+  },
+  "fonologia_y_escritura": {
+    "fuente": "MC-008 — Prononciation et Systèmes d'Écriture",
+    "interlingua": "IPA se usa como sistema de representación intermedio entre cualquier lengua origen y destino.",
+    "puente_fonetico": [
+      "representation",
+      "comparaison",
+      "interpretation"
+    ],
+    "implementacion_referencia": "hangulito (módulo Fonetizador) — no requiere deep learning, es un problema de reglas + tablas de mapeo"
+  },
+  "secuenciacion": {
+    "fuente": "MC-009 — Moteur de Séquencement Curriculaire",
+    "regla_maestra": "El orden de enseñanza lo decide EXCLUSIVAMENTE el grafo de prerrequisitos declarado en la tabla canónica XX-000 del idioma activo. El agente nunca decide el orden por numeración, por 'lo que existe', ni por razonamiento libre.",
+    "fuente_de_datos_requerida": "tabla_canonica_XX-000 (ejemplo: KO-000 v9.0) — Type (sequentiel/transversal) + Prerequis por dominio",
+    "criterio_seleccion_desempate": "potentiel_d_expansion (nodo → cuántas ramas nuevas habilita)",
+    "mecanismo_detour": "Si una rama se interrumpe (ej. por dificultad detectada), se apila y se puede retomar después sin perder el progreso.",
+    "nodos_transversales": {
+      "regla": "No compiten por turno de enseñanza secuencial. Se consumen incrementalmente en paralelo.",
+      "activacion_reforzada": "Solo se prioriza un nodo transversal fuera de su consumo incremental normal si MC-002 detecta dificultad persistente asociada a él."
+    },
+    "distincion_critica": "orden_de_construccion (documental, taxonómico, gobierna en qué secuencia se REDACTAN los documentos XX-X00) ≠ orden_de_enseñanza (este motor, gobierna en qué secuencia se ENSEÑAN los dominios al alumno). Nunca usar uno para decidir el otro.",
+    "regla_accesibilidad_v1": "Un nodo es accesible si todos sus prerrequisitos fueron ENSEÑADOS (MC-009 §8), no consolidados. En v1, 'enseñada' = unidad en estado acquis o consolide (ciclo MC-001 completado). Un prerrequisito que sea un dominio transversal se considera siempre satisfecho (MC-009 §21).",
+    "dominio_agotado_v1": "Un dominio secuencial está agotado cuando tiene al menos una lección declarada y todas sus lecciones declaradas fueron enseñadas. Un dominio sin lecciones declaradas NUNCA se considera agotado: bloquea en lugar de saltarse (Principio 7).",
+    "bloqueo_por_falta_de_contenido": "Si la siguiente lección de la rama activa está declarada pero no redactada, el motor se BLOQUEA (código 305) en lugar de abrir otra rama: saltar de rama por falta de contenido violaría la progresión por profundidad. El bloqueo se registra para que el autor sepa qué lección redactar.",
+    "orden_intra_dominio": "Dentro de un dominio: primer sous-domaine en el orden en que la arquitectura lo declara, y dentro de él el primer contenido declarado (MC-009 §21), salvo prerrequisitos explícitos de lección.",
+    "politica_desempate_declarada": {
+      "estado": "PROPUESTA — pendiente de ratificación. MC-009 §9 exige que el criterio secundario sea declarado; MC-009 §26 lo deja sin definir.",
+      "criterios_en_orden": [
+        "contenido_disponible",
+        "orden_declaracion_arquitectura"
+      ],
+      "descripcion": {
+        "contenido_disponible": "Entre ramas de igual potencial, preferir aquella cuya siguiente lección ya está redactada.",
+        "orden_declaracion_arquitectura": "Si persiste el empate, el orden en que la arquitectura (XX-GRAFO) declara sus dominios."
+      },
+      "trazabilidad": "Cada uso del desempate queda en la justificación de la decisión (MC-009 §23)."
+    },
+    "no_implementado_v1": [
+      "Aceleración e interrupción pedagógica (MC-009 §17): la interfaz MC-002↔MC-009 no está definida (MC-009 §26).",
+      "Activación reforzada de nodos transversales por dificultad persistente (MC-009 §16): el umbral de 'difficulté persistante' no está definido (MC-002 §32)."
+    ]
+  },
+  "modos_operacion": {
+    "origen": "Formalizado en v1.2.0, a partir del diagrama de flujo de navegación de la app (rol docente/estudiante) discutido antes de la piloto FR-411.",
+    "regla_general": "El modo no es un documento operativo aparte — es un parámetro que el backend pasa al prompt. Todo modo reutiliza MC-OPERACIONAL y/o LG-OPERACIONAL tal cual existen; nunca se duplica contenido de las 12 etapas de MC-001 por modo.",
+    "estudiante": {
+      "usa": "MC-OPERACIONAL completo (leccion + evidencia_y_estado + consolidacion_continua).",
+      "limite_idiomas": {
+        "max_idiomas_en_curso": 3,
+        "max_solicitudes_idioma_nuevo_pendientes": 1,
+        "regla_anti_desperdicio": "Antes de registrar una solicitud como 'idioma nuevo', el backend verifica primero si el idioma YA EXISTE en el catálogo (aunque esté con activo=false, precargado). Si existe, se asigna directo como uno de los 3 — la solicitud NUNCA se consume por un idioma que ya estaba disponible."
+      },
+      "nivel_previo": "El agente NUNCA pregunta nivel de conocimiento previo. Toda unidad_alumno_idioma nueva inicia en la primera unidad que entregue MC-009 (mayor potencial de expansión entre transversales sin prerrequisitos) — no existe campo en el sistema para registrar un nivel autodeclarado.",
+      "criterio_completitud": {
+        "produccion_inicial": "mínimo_requerido = techo(total_pedido × 0.8) — ej. 10 ejercicios → mínimo 8; 100 palabras → mínimo 80; 7 ejercicios → mínimo 6 (redondeo hacia arriba, nunca hacia abajo).",
+        "fase_correccion": "100% de lo señalado como error debe quedar corregido antes de avanzar — asimetría intencional frente al 80% de producción inicial (MC-001 étape 17 exige colecta→corrección→diagnóstico completos).",
+        "factor_minimo": 0.8
+      },
+      "evidencia_multimedia": {
+        "regla": "Fotos/audio de producción NUNCA viven en la base de datos relacional. Se suben una sola vez a Supabase Storage; Claude las analiza UNA sola vez (ahí se paga el costo de visión) y devuelve el resultado en texto; evidencia.url_storage guarda solo la referencia."
+      },
+      "agrupacion_de_turnos": {
+        "origen": "Piloto FR-411 — costo de visión es por imagen (overhead fijo), no por contenido de la imagen.",
+        "regla": "Agrupar en un solo turno de presentación los niveles de ejercicio que NO dependan de corrección previa (ej. niveau 1 + niveau 2 juntos). Producción escrita libre puede presentarse aparte por su extensión. Transformation SIEMPRE va después de corrección — NUNCA se agrupa antes, así ahorre fotos: agrupar por étape en vez de por dependencia de corrección violaría el orden canónico de MC-001 (riesgo de practicar transformación sobre un error aún no corregido)."
+      },
+      "limitacion_v1_evidencia_oral": "MC-001 §15 admite producción oral en el niveau 3; v1 solo acepta texto e imágenes (tipo_contenido 'audio' existe en la BD pero no se procesa)."
+    },
+    "docente_aprender": {
+      "usa": "MC-OPERACIONAL solo para las etapas 1-12 de MC-001 (explicación/práctica guiada). Las etapas 14/15/17 (evidencia esperada, corrección diferida) quedan DESACTIVADAS en este modo — no se evalúa, no se diagnostica, no se corrige vía el agente.",
+      "sin_evidencia": "Regla explícita del usuario: este modo NO requiere evidencia de ningún tipo. La validación del aprendizaje del grupo es responsabilidad exclusiva del docente, a su discreción (típicamente en físico, fuera del sistema).",
+      "nivel_previo": "El agente NUNCA pregunta nivel de conocimiento previo del grupo — misma regla que en modo estudiante.",
+      "estructura_de_progreso": {
+        "unidad": "sesion_grupo (no alumno_idioma) — un docente puede tener VARIAS sesiones de grupo simultáneas (distintos grupos, mismo o distinto idioma, distinto nivel de avance cada una).",
+        "regla_de_exclusividad": "Un idioma en progreso por SESIÓN DE GRUPO hasta terminarlo — la exclusividad es por grupo, no por docente. Un docente puede enseñar el mismo idioma a dos grupos en paralelo sin conflicto."
+      },
+      "seguro_tiempo_minimo": {
+        "duracion": "2 horas desde que se presenta una unidad nueva al grupo, antes de poder marcarla como vista/avanzar.",
+        "enforcement": "Backend valida `now() - iniciado_unidad_en >= 2h` en cada intento de avance, independientemente de si el frontend ya deshabilitó el botón — nunca confiar solo en el cliente.",
+        "auditoria": "Se registra avanzado_por (username del docente) y avanzado_en (timestamp real de confirmación), aunque la decisión sea a discreción — para trazabilidad, no para restringir la decisión."
+      },
+      "motor_reactivacion_variante": {
+        "origen": "El modo no genera evidencia individual, así que la señal 'errores_en_unidades_dependientes' del motor_reactivacion base NO APLICA aquí — no existe diagnóstico individual que la alimente.",
+        "regla": "w_errores = 0 en este modo (la entrada no existe, no se sustituye por un valor artificial). Prioridad de reactivación de grupo se calcula solo con w_dependencia + w_tiempo (recalibrados para sumar 1 entre ambos) + el sorteo independiente de hasard. El sistema puede sugerir al docente qué repasar por dependencia/tiempo, nunca por errores."
+      }
+    },
+    "docente_crear": {
+      "usa": "LG-OPERACIONAL, no MC-OPERACIONAL — es generación/validación de arquitectura, no ejecución de lección.",
+      "pool_de_idiomas": {
+        "estructura": "Tabla de solicitudes con estado (pendiente/en_proceso/completado/rechazada_ya_existe).",
+        "regla_de_exclusividad": "Solo puede existir UNA solicitud con estado 'en_proceso' a la vez — restricción real (aplicación o constraint de base de datos), no solo sugerencia de flujo, para no perder trazabilidad de arquitecturas a medias."
+      },
+      "validacion_paso_a_paso": {
+        "diferencia_con_LG_OPERACIONAL_base": "LG-OPERACIONAL original solo exigía confirmación humana en las Étapes 4 (décision) y 6 (rédaction) de LG-100. En modo docente_crear, el usuario exigió validación explícita en las 6 étapes (inventaire, points_critiques, recherche, decision, numerotation, redaction) — NINGUNA avanza sin validación del docente.",
+        "estructura": "sesion_creacion_arquitectura lleva el paso actual (1-6); cada paso queda con validado_por y validado_en antes de que el agente pueda generar el siguiente — mismo patrón de auditoría que evidencia (nunca se sobrescribe, solo se acumula)."
+      },
+      "seguro_anti_aprobacion_sin_lectura": {
+        "condicion_1_scroll": "Elemento centinela al final del contenido (IntersectionObserver) confirma que el docente vio el final real, no solo que la barra de scroll se ve completa.",
+        "condicion_2_tiempo_minimo": "Calculado a partir de la extensión del contenido presentado (ej. cantidad de palabras ÷ velocidad de lectura promedio) — NO un número fijo arbitrario igual para todo documento.",
+        "ambas_obligatorias": "El botón 'Validar este paso' permanece deshabilitado hasta cumplir AMBAS condiciones.",
+        "enforcement_backend": "El backend guarda su propio timestamp de 'cuándo se mostró el contenido' y lo compara contra 'cuándo llegó la validación' — si alguien intenta forzar una validación vía API directa sin pasar por la UI, se rechaza por tiempo insuficiente. Mismo principio de no confiar solo en el cliente que el seguro de 2h de docente_aprender."
+      },
+      "registro_de_auditoria_final": "El documento de arquitectura final (XX-000/XX-X00) lleva estampado validado_por (username del docente) y fecha_validacion como campos estructurados obligatorios.",
+      "estado_de_madurez": "Modo definido pero NO ejecutado ni probado — a diferencia de estudiante (probado con FR-411), queda pendiente de validación real por tiempo indefinido, según decisión explícita del usuario."
+    }
+  },
+  "notas_de_implementacion_para_el_agente": [
+    "Este documento se carga siempre en el contexto del agente, sin importar el idioma activo.",
+    "Junto a este documento, cargar solo la tabla canónica XX-000 del idioma en curso (ligera, son datos tabulares, no prosa).",
+    "El orden de las 12 etapas y las reglas de evidencia deben imponerse vía lógica de backend (máquina de estados), no confiarse a la interpretación del LLM en cada turno.",
+    "LG-OPERACIONAL es un documento separado y solo se carga cuando el agente debe generar o validar arquitectura nueva (ej. un idioma sin arquitectura previa), no durante la ejecución normal de lecciones."
+  ]
+}
