@@ -7,8 +7,12 @@ export interface PasoPlan {
   tipo: "presentacion" | "produccion" | "correccion";
   niveles?: (number | null)[];
   categoria?: "guiada" | "libre";
-  /** diferida = los errores se acumulan hasta el paso de corrección (MC-001 §17). */
-  correccion?: "diferida" | "inmediata";
+  /**
+   * diferida  = los errores se acumulan hasta el paso de corrección (MC-001 §17).
+   * inmediata = se corrigen al terminar el paso (no la usa el plan actual).
+   * ninguna   = los errores se registran como evidencia, sin corrección (MC-001 §18).
+   */
+  correccion?: "diferida" | "inmediata" | "ninguna";
   /** Solo en pasos de corrección: pasos cuya producción se corrige aquí. */
   fuentes?: string[];
   cierra_unidad?: boolean;

@@ -6,7 +6,7 @@ Backend del agente pedagógico. Recibe los mensajes del alumno y ejecuta la lecc
 
 **Principio de diseño:** el LLM *percibe* (transcribe, cuenta, diagnostica) y el código *decide* (umbrales 80/100, avance de étape, estado de la unidad, secuenciación). El total de ejercicios pedidos lo fija el sistema al registrar la solicitud, así que el agente no puede inflarlo.
 
-Versión de datos: MC-OPERACIONAL v1.4.0 (contrastado con MC-001 v1.0.2 real) · Verificación: `deno check` sin errores · 45 pruebas pasando.
+Versión de datos: MC-OPERACIONAL v1.5.0 (alineado con MC-001 v1.0.3) · Verificación: `deno check` sin errores · 45 pruebas pasando.
 
 ---
 
@@ -159,7 +159,7 @@ async function fotoABase64(file, lado = 1600, calidad = 0.8) {
 - niveau 3, production libre (15);
 - production écrite (16);
 - **correction détaillée (17)**: corrige de una vez todos los errores acumulados en 15 y 16 y exige el 100 %;
-- transformation (18), con corrección inmediata;
+- transformation (18), **sin corrección** (MC-001 §18): se exige el 80 % y sus errores quedan solo como evidencia;
 - vocabulaire (19), que cierra la unidad.
 
 Mientras se recoge la producción, el agente **no corrige**: MC-001 §17 exige terminar la colecta antes de la corrección diferida.
@@ -260,7 +260,6 @@ Si cambias MC-OPERACIONAL o un grafo en el repo, **vuelve a copiarlo aquí** y r
 ## 8. Límites de v1 y decisiones pendientes
 
 **Pendiente de ratificar** (marcado en MC-OPERACIONAL v1.3.0):
-- Corrección inmediata (100 %) en la étape 18: MC-001 §17 solo cubre las étapes 15 y 16.
 - Política de desempate de MC-009 (contenido disponible → orden de declaración).
 - Regla provisional de transición: en_cours al iniciar, acquis al completar; consolidé no es automático.
 - Candidatos del motor = acquis + consolide; se evalúa al cierre de cada unidad.

@@ -37,7 +37,7 @@ const err = (fragmento: string, nivel: number | null, fuera = false, rel: string
   fuera_de_scope: fuera, unidad_relacionada: rel, nivel,
 });
 
-Deno.test("piloto FR-411 según MC-001 real: corrección diferida en étape 17, cierre y siguiente unidad", async () => {
+Deno.test("piloto FR-411 según MC-001 v1.0.3: corrección diferida en étape 17, étape 18 sin corrección, cierre", async () => {
   const sol = (enunciado: string, niveles: unknown[]) => ({ mensaje_para_alumno: enunciado, solicitud: { enunciado, niveles } });
   const t = montar([
     /* 1 */ sol("Étapes 8–14 … Ejercicios niveles 1 y 2", [{ nivel: 1, total_pedido: 8, unidad_medida: "ejercicios" }, { nivel: 2, total_pedido: 4, unidad_medida: "ejercicios" }]),
@@ -55,8 +55,7 @@ Deno.test("piloto FR-411 según MC-001 real: corrección diferida en étape 17, 
     /* 10 */ { mensaje_para_alumno: "¡Todo corregido!", transcripcion: "…", indices_corregidos: [2, 3] },
     /* 11 */ sol("Transformation", [{ nivel: null, total_pedido: 5, unidad_medida: "ejercicios" }]),
     /* 12 */ eva([{ nivel: null, total_entregado: 5, items_evaluados: 5, items_correctos: 4 }], [err("elle était allé", null)]),
-    /* 13 */ { mensaje_para_alumno: "Correcto.", transcripcion: "…", indices_corregidos: [0] },
-    /* 14 */ { mensaje_para_alumno: "Vocabulaire…", solicitud: null },
+    /* 13 */ { mensaje_para_alumno: "Vocabulaire…", solicitud: null },
   ]);
 
   // Turno 1 — MC-009 elige FR-411; étapes 8–14 + solicitud de la étape 15.
@@ -107,13 +106,16 @@ Deno.test("piloto FR-411 según MC-001 real: corrección diferida en étape 17, 
   assertEquals([r.resultado, r.estado.paso], ["avanza", "transformation"]);
   assertEquals(t.repo.evidencias.filter((e) => e.metricas.intento === "correccion").every((e) => e.etapa_mc001 === 17), true);
 
-  // Étape 18 — transformación: su corrección es inmediata (a ratificar).
+  // Étape 18 — transformación: NO se corrige (MC-001 §18); el error queda solo como evidencia.
   await t.continuar();
   assert(t.llm.peticiones.at(-1)!.sistema.dinamico.includes("étape 14 del livrable"));
   r = await t.responder("transformaciones");
-  assertEquals([r.resultado, r.estado.etapa_actual], ["requiere_correccion", 17]);
-  r = await t.responder("corrijo");
-  assertEquals(r.estado.paso, "vocabulaire");
+  assert(t.llm.peticiones.at(-1)!.sistema.dinamico.includes("NO se corrige (MC-001 §18)"));
+  assertEquals([r.resultado, r.estado.paso], ["avanza", "vocabulaire"]);
+  const evTransf = t.repo.evidencias.filter((e) => e.metricas.paso === "transformation");
+  assertEquals(evTransf.length, 1);
+  assertEquals(evTransf[0].diagnosticos?.[0].fragmento, "elle était allé", "el error se registra como evidencia");
+  assertEquals(t.repo.evidencias.filter((e) => e.metricas.paso === "transformation" && e.metricas.intento === "correccion").length, 0);
 
   // Étape 19 — cierre: acquis, puntaje, FR-412.
   r = await t.continuar();
@@ -122,7 +124,7 @@ Deno.test("piloto FR-411 según MC-001 real: corrección diferida en étape 17, 
   assertEquals([r.estado.unidad_id, r.estado.fase], ["FR-412", "listo_para_continuar"]);
   // guiada: niveles 1–2 (8+1)/(8+4) y transformación 4/5 → 13/17 ; libre: nivel 3 4/5 y producción 10/10 → 14/15
   assertAlmostEquals(t.repo.puntajes.get(`${AI}|FR-411`)!, 100 * (0.6 * (14 / 15) + 0.4 * (13 / 17)), 0.01);
-  assertEquals(t.llm.peticiones.length, 14, "una llamada al LLM por turno que la necesita");
+  assertEquals(t.llm.peticiones.length, 13, "una llamada al LLM por turno que la necesita");
   assert(t.registro.eventos.some((e) => e.codigo === 901));
 });
 

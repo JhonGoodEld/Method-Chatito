@@ -1,6 +1,6 @@
 {
   "documento": "MC-OPERACIONAL",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "historial": [
     {
       "version": "1.0.0",
@@ -21,6 +21,10 @@
     {
       "version": "1.4.0",
       "cambio": "Contrastado con MC-001 v1.0.2 real: (a) numeración de étapes = la de MC-001 (8–19, igual a su número de sección), con 'posicion' 1–12 del ciclo; (b) corrección DIFERIDA: la étape 17 corrige juntas las producciones de las étapes 15 y 16 (MC-001 §17 fase 1), ya no después de cada nivel; (c) niveau 3 = production libre (categoría libre); (d) descripciones de los 3 niveaux de MC-001 §15. Se retira la marca 'a ratificar' sobre 14/15/17: confirmado."
+    },
+    {
+      "version": "1.5.0",
+      "cambio": "Alineado con MC-001 v1.0.3: (a) la étape 18 (transformación) NO se corrige (decisión J. Good): sus errores se registran como evidencia, sin corrección ni reescritura; se mantiene la completitud del 80%; (b) se documenta la separación contenido fijo / contenido generado (MC-001 §7.2–§7.4)."
     }
   ],
   "proposito": "Capa operativa derivada de la saga MC-00X (Método Chatito). Contiene solo las reglas que el agente de IA debe aplicar en tiempo de ejecución, sin la justificación narrativa ni el historial de decisiones que sí viven en los documentos MC originales del repositorio. Es agnóstica de idioma: se usa igual para FR, KO, EN o cualquier arquitectura futura.",
@@ -43,7 +47,7 @@
     }
   },
   "leccion": {
-    "fuente": "MC-001 — Structure Standard d'une Leçon v1.0.2 (contrastado con el documento real).",
+    "fuente": "MC-001 — Structure Standard d'une Leçon v1.0.3.",
     "regla_maestra": "No se avanza a la etapa N+1 sin haber completado y declarado la etapa N. El agente no puede saltar a producción/ejercicios antes de declarar el conocimiento completo.",
     "ciclo_12_etapas": [
       {
@@ -137,7 +141,8 @@
         ],
         "fuentes": "Las producciones de las étapes 15 y 16 (MC-001 §17, fase 1).",
         "regla": "Ninguna fase empieza antes de que termine la anterior. La corrección es frase por frase con explicación gramatical; el diagnóstico clasifica cada error con la tipología de MC-002 §13."
-      }
+      },
+      "etape_18_sin_correccion": "MC-001 v1.0.3 §18: la transformación no se corrige. Sus errores se consignan como evidencia (MC-002) sin corrección ni exigencia de reescritura."
     },
     "plan_ejecucion": {
       "nota": "Orden de ENTREGA en turnos. Agrupa sin reordenar el ciclo. Producciones con correccion 'diferida' acumulan sus errores hasta el paso de corrección (étape 17).",
@@ -219,8 +224,7 @@
             null
           ],
           "categoria": "guiada",
-          "correccion": "inmediata",
-          "nota": "MC-001 no especifica si la étape 18 se corrige; se aplica la regla general del 100% de J. Good. A ratificar."
+          "correccion": "ninguna"
         },
         {
           "paso": "vocabulaire",
@@ -232,7 +236,14 @@
         }
       ]
     },
-    "numeracion": "n = número de étape de MC-001, que coincide con su número de sección (8–19); posicion = lugar en el ciclo de 12 (MC-000 §10). Toda referencia 'étape N' en documentos, evidencia y registros usa n."
+    "numeracion": "n = número de étape de MC-001, que coincide con su número de sección (8–19); posicion = lugar en el ciclo de 12 (MC-000 §10). Toda referencia 'étape N' en documentos, evidencia y registros usa n.",
+    "contenido_fijo_y_generado": {
+      "fuente": "MC-001 v1.0.3 §7.2–§7.4",
+      "regla": "Lo que varía es la manera de enseñar, nunca lo que se enseña. Lo que se corrige es la evidencia del alumno, confrontada con el contenido fijo.",
+      "fijo": "Del livrable validado: regla, uso, formas, expresiones, errores frecuentes con causa, notas y excepciones, transformaciones previstas, niveles y formas de evidencia, criterio de producción escrita, lista de vocabulario, portée.",
+      "generado": "Por el agente en cada sesión: formulación de las explicaciones, al menos 5 ejemplos nuevos (étape 13), ítems de los ejercicios, tema de la producción escrita, corrección y diagnóstico de la evidencia real, frases transformadas.",
+      "prohibido": "Añadir, quitar o modificar reglas, excepciones, criterios o formas de evidencia; copiar los ejemplos de referencia del livrable."
+    }
   },
   "evidencia_y_estado": {
     "fuente": "MC-002 — Modèle d'Apprentissage",

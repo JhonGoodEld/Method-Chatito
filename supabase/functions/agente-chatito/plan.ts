@@ -18,8 +18,8 @@ export function validarPlan(pasos: PasoPlan[]): string[] {
     if (paso.tipo === "produccion") {
       if (!paso.niveles || paso.niveles.length === 0) p.push(`${paso.paso}: producción sin niveles`);
       if (paso.categoria !== "guiada" && paso.categoria !== "libre") p.push(`${paso.paso}: categoría inválida`);
-      if (paso.correccion !== "diferida" && paso.correccion !== "inmediata") {
-        p.push(`${paso.paso}: correccion debe ser "diferida" o "inmediata"`);
+      if (paso.correccion !== "diferida" && paso.correccion !== "inmediata" && paso.correccion !== "ninguna") {
+        p.push(`${paso.paso}: correccion debe ser "diferida", "inmediata" o "ninguna"`);
       }
     } else if (paso.tipo === "correccion") {
       if (!paso.fuentes?.length) p.push(`${paso.paso}: paso de corrección sin fuentes`);

@@ -103,7 +103,7 @@ export function bloqueDinamico(mc: McOperacional, tarea: Tarea): string {
         `Declara primero las formas de evidencia esperadas para esta producción (étape 15), tomándolas del livrable.`,
         instruccionSolicitud(mc, tarea.paso),
         tarea.paso.etapas.includes(18)
-          ? `Ejecuta, con el alumno, las transformaciones previstas declaradas en la étape 14 del livrable, sobre las frases principales producidas o estudiadas en la lección (ya corregidas en la étape 17).`
+          ? `Ejecuta, con el alumno, las transformaciones previstas declaradas en la étape 14 del livrable, sobre las frases principales producidas o estudiadas en la lección (ya corregidas en la étape 17). Esta étape no se corrige (MC-001 §18).`
           : "",
       ].filter(Boolean).join("\n");
 
@@ -134,6 +134,8 @@ export function bloqueDinamico(mc: McOperacional, tarea: Tarea): string {
         `Si en algún nivel lo entregado no alcanza el mínimo: pide completar SOLO lo que falta.`,
         tarea.paso.correccion === "diferida"
           ? `La corrección de este paso es DIFERIDA a la étape 17 (MC-001 §17): en tu mensaje NO corrijas ni señales errores; acusa recibo y, si procede, pide lo que falta. Aun así, reporta TODOS los errores en el JSON.`
+          : tarea.paso.correccion === "ninguna"
+          ? `Este paso NO se corrige (MC-001 §18): en tu mensaje NO corrijas, no señales errores y no pidas reescribir; acusa recibo y, si procede, pide lo que falta. Aun así, reporta TODOS los errores en el JSON, solo como registro de evidencia.`
           : `Si alcanza el mínimo y hay errores dentro del alcance: presenta la corrección con su diagnóstico y pide reescribir SOLO lo señalado. Si no alcanza el mínimo, no corrijas todavía.`,
         `transcripcion: transcribe fielmente lo que produjo el alumno (texto e imágenes).`,
       ].join("\n");

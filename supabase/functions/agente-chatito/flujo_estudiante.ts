@@ -372,6 +372,11 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
     );
   }
 
+  if (paso.correccion === "ninguna") {
+    // MC-001 §18: los errores ya quedaron en la evidencia (diagnosticos); no se corrigen.
+    return await avanzar(ctx, s, paso, salida.mensaje_para_alumno, "Paso completado.");
+  }
+
   if (enAlcance.length > 0) {
     const senalados: ErrorSenalado[] = enAlcance.map((e, i) => aSenalado(e, i));
     s.sesion = await ctx.repo.actualizarSesion(sesion, {
