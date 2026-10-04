@@ -28,6 +28,7 @@ export const CATALOGO = {
   103: { nombre: "DB_NO_ENCONTRADO", http: 404, severidad: "warning", mensaje: "No encontramos el recurso solicitado." },
   104: { nombre: "DB_ESCRITURA", http: 500, severidad: "critico", mensaje: "No pudimos guardar tu progreso. Intenta de nuevo en un momento." },
   106: { nombre: "SUPABASE_NO_DISPONIBLE", http: 503, severidad: "critico", mensaje: "El servicio no está disponible en este momento. Intenta en unos minutos." },
+  107: { nombre: "CUENTA_NO_ELIMINADA", http: 500, severidad: "critico", mensaje: "No pudimos completar la eliminación de tu cuenta. Intenta de nuevo." },
   105: { nombre: "DB_CONFLICTO_CONCURRENCIA", http: 409, severidad: "warning", mensaje: "Tu sesión cambió mientras procesábamos la petición. Recarga e intenta de nuevo." },
 
   // ---------- 2xx Proveedor de IA ----------
@@ -49,6 +50,7 @@ export const CATALOGO = {
   308: { nombre: "IDIOMA_SIN_GRAFO", http: 500, severidad: "critico", mensaje: "Este idioma aún no tiene su arquitectura cargada." },
   309: { nombre: "GRAFO_INCONSISTENTE", http: 500, severidad: "critico", mensaje: "Hay un problema con la estructura del curso. Ya fue reportado." },
   310: { nombre: "ACCION_NO_ESPERADA", http: 409, severidad: "info", mensaje: "En este momento no se espera una respuesta; pulsa «continuar»." },
+  312: { nombre: "CONFIRMACION_REQUERIDA", http: 400, severidad: "info", mensaje: "Para eliminar tu cuenta debes confirmarlo explícitamente." },
   311: { nombre: "PETICION_EN_CURSO", http: 409, severidad: "info", mensaje: "Ya estamos procesando tu petición anterior. Espera un momento." },
 
   // ---------- 4xx Acceso ----------
@@ -61,11 +63,13 @@ export const CATALOGO = {
   501: { nombre: "REDIS_NO_DISPONIBLE", http: 503, severidad: "warning", mensaje: "Servicio temporalmente degradado." },
   502: { nombre: "STORAGE_FALLIDO", http: 500, severidad: "warning", mensaje: "No pudimos guardar tu imagen, pero tu respuesta sí quedó registrada." },
   503: { nombre: "MODO_NO_IMPLEMENTADO", http: 501, severidad: "info", mensaje: "Este modo todavía no está disponible." },
+  504: { nombre: "STORAGE_BORRADO_FALLIDO", http: 500, severidad: "critico", mensaje: "No pudimos eliminar tus archivos. Tu cuenta sigue intacta; intenta de nuevo." },
   598: { nombre: "CONFIGURACION_INVALIDA", http: 500, severidad: "critico", mensaje: "El servicio está mal configurado. Ya fue reportado." },
   599: { nombre: "ERROR_INESPERADO", http: 500, severidad: "critico", mensaje: "Ocurrió un error inesperado. Ya fue reportado." },
 
   // ---------- 9xx Telemetría ----------
   900: { nombre: "LLM_USO", http: 200, severidad: "info", mensaje: "Uso del proveedor de IA." },
+  902: { nombre: "CUENTA_ELIMINADA", http: 200, severidad: "info", mensaje: "Cuenta eliminada a petición del titular." },
   901: { nombre: "DECISION_SECUENCIACION", http: 200, severidad: "info", mensaje: "Decisión de MC-009 registrada." },
 } as const satisfies Record<number, DefinicionError>;
 

@@ -6,7 +6,7 @@ Backend del agente pedagógico. Recibe los mensajes del alumno y ejecuta la lecc
 
 **Principio de diseño:** el LLM *percibe* (transcribe, cuenta, diagnostica) y el código *decide* (umbrales 80/100, avance de étape, estado de la unidad, secuenciación). El total de ejercicios pedidos lo fija el sistema al registrar la solicitud, así que el agente no puede inflarlo.
 
-Versión de datos: MC-OPERACIONAL v1.5.0 (alineado con MC-001 v1.0.3) · Verificación: `deno check` sin errores · 45 pruebas pasando.
+Versión de datos: MC-OPERACIONAL v1.5.0 (alineado con MC-001 v1.0.3) · Verificación: `deno check` sin errores · 52 pruebas pasando.
 
 ---
 
@@ -28,6 +28,7 @@ Versión de datos: MC-OPERACIONAL v1.5.0 (alineado con MC-001 v1.0.3) · Verific
 | `redis.ts` | Upstash: rate limit, tope diario global, candado, caché de livrables |
 | `registro.ts` | Escritura en `logs_sistema` (nunca rompe la petición) |
 | `peticion.ts` | Validación del cuerpo y de las imágenes (incluidos los bytes reales) |
+| `cuenta.ts` | Eliminación de la cuenta (derecho de cancelación; requisito de App Store y Google Play). Aislado del flujo. |
 | `errores.ts` | Catálogo de códigos |
 | `config.ts`, `tipos.ts` | Parámetros de infraestructura y tipos |
 | `*.json` | **Copias** de MC-OPERACIONAL y de los grafos (la fuente canónica está en el repo) |
@@ -129,6 +130,13 @@ async function fotoABase64(file, lado = 1600, calidad = 0.8) {
 }
 ```
 
+**Eliminar la cuenta.** Es irreversible. Pide confirmación en la interfaz y envía la frase literal `ELIMINAR`:
+```js
+const r = await llamarAgente({ accion: 'eliminar_cuenta', confirmacion: 'ELIMINAR' });
+if (r.cuenta_eliminada) await supabase.auth.signOut();
+```
+Se borran las fotos de Storage y el usuario; la base de datos elimina en cascada perfil, idiomas, evidencia, progreso, puntajes, sesiones y solicitudes propias. Los registros técnicos quedan anonimizados, igual que el trabajo de un docente que dependía de una solicitud del alumno (migración 003). Para Google Play, la versión web de la app sirve como enlace de borrado: el usuario inicia sesión y elimina su cuenta.
+
 **Inscripciones directas** (el frontend inserta en `alumno_idioma` / `solicitudes_idioma`): los triggers devuelven errores cuyo `message` contiene `MC301`, `MC303` o `MC304`. Búscalos con `error.message.includes('MC301')`.
 
 **Muestra siempre el `request_id` en los mensajes de error.** Es lo que te permite encontrar el registro exacto cuando alguien reporta un problema.
@@ -176,6 +184,7 @@ Mientras se recoge la producción, el agente **no corrige**: MC-001 §17 exige t
 | 104 | DB_ESCRITURA | 500 | Falló una escritura. La evidencia escrita antes se conserva. |
 | 105 | DB_CONFLICTO_CONCURRENCIA | 409 | Dos peticiones a la vez sobre la misma sesión; la segunda se rechaza. |
 | 106 | SUPABASE_NO_DISPONIBLE | 503 | Supabase Auth no respondió. **No** es culpa del alumno. |
+| 107 | CUENTA_NO_ELIMINADA | 500 | Las fotos ya se borraron, pero falló el borrado del usuario. Basta con reintentar. |
 | 201 | LLM_AUTENTICACION | 502 | API key inválida o revocada. Revisa el secret. |
 | 202 | LLM_LIMITE_PROVEEDOR | 503 | El proveedor está saturado o limita las peticiones. |
 | 203 | LLM_RESPUESTA_MALFORMADA | 502 | El modelo devolvió JSON roto. `contexto.modelo` dice cuál; `contexto.fragmento` muestra 300 caracteres. |
@@ -191,6 +200,7 @@ Mientras se recoge la producción, el agente **no corrige**: MC-001 §17 exige t
 | 309 | GRAFO_INCONSISTENTE | 500 | Ciclo o prerrequisito inexistente en el grafo o en `livrables.prerequis`. |
 | 310 | ACCION_NO_ESPERADA | 409 | Se envió "responder" cuando tocaba "continuar". |
 | 311 | PETICION_EN_CURSO | 409 | Doble toque: ya hay una petición del mismo usuario en marcha. |
+| 312 | CONFIRMACION_REQUERIDA | 400 | `eliminar_cuenta` sin la frase exacta `ELIMINAR`. No se borró nada. |
 | 401 | NO_AUTENTICADO | 401 | JWT ausente o inválido. |
 | 403 | SIN_PERMISO | 403 | El `alumno_idioma_id` no es del usuario (o no existe). |
 | 429 | LIMITE_USUARIO | 429 | Más de 6 mensajes por minuto. |
@@ -198,10 +208,12 @@ Mientras se recoge la producción, el agente **no corrige**: MC-001 §17 exige t
 | 501 | REDIS_NO_DISPONIBLE | — | Aviso: Upstash falta o falla; la app sigue sin protección. |
 | 502 | STORAGE_FALLIDO | — | Aviso: la foto no se guardó; la transcripción sí. |
 | 503 | MODO_NO_IMPLEMENTADO | 501 | Los modos docente llegan en v1.1. |
+| 504 | STORAGE_BORRADO_FALLIDO | 500 | Falló el borrado de fotos. La cuenta sigue intacta; basta con reintentar. |
 | 598 | CONFIGURACION_INVALIDA | 500 | Falta un secret, o MC-OPERACIONAL/los grafos son inválidos. |
 | 599 | ERROR_INESPERADO | 500 | Bug. El registro incluye el `stack_trace`. |
 | 900 | LLM_USO | — | Telemetría: proveedor, modelo real, tokens, latencia. |
 | 901 | DECISION_SECUENCIACION | — | Telemetría: cada decisión de MC-009 con su justificación (§23). |
+| 902 | CUENTA_ELIMINADA | — | Telemetría anónima: una cuenta se eliminó (solo el número de archivos borrados). |
 
 ---
 
@@ -246,7 +258,7 @@ delete from logs_sistema where creado_en < now() - interval '90 days';
 ## 7. Pruebas y empaquetado
 
 ```bash
-deno test pruebas/                                      # 45 pruebas; no necesitan red ni BD
+deno test pruebas/                                      # 52 pruebas; no necesitan red ni BD
 deno check index.ts                                     # tipos
 deno run --allow-read --allow-write herramientas/empaquetar.ts   # → agente-chatito-DASHBOARD.ts
 deno check agente-chatito-DASHBOARD.ts
@@ -274,4 +286,3 @@ Si cambias MC-OPERACIONAL o un grafo en el repo, **vuelve a copiarlo aquí** y r
 - Aceptar una sugerencia de reactivación.
 - Transición a consolidé.
 - **Abandonar un idioma**: sin esto un alumno puede quedar atrapado en 3 idiomas. Además está ligado al derecho de cancelación (ARCO).
-- Borrado de cuenta con limpieza de Storage.

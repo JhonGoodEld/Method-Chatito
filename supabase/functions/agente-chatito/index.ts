@@ -9,6 +9,7 @@
 // la tabla logs_sistema.
 
 import { GRAFOS, INFRA, MC, secretOpcional, validarDatosCanonicos } from "./config.ts";
+import { CuentaSupabase, eliminarCuenta } from "./cuenta.ts";
 import { crearClienteAdmin, obtenerUsuarioDelToken, type Repositorio, RepositorioSupabase } from "./datos.ts";
 import { ErrorApp, normalizarError } from "./errores.ts";
 import { manejarEstudiante } from "./flujo_estudiante.ts";
@@ -132,6 +133,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
       const adquirido = await protegerRedis(registro, () => redis!.adquirirCandado(usuario.id, requestId), true);
       if (!adquirido) throw new ErrorApp(311, "Otra petición del mismo usuario está en curso");
       usuarioConCandado = usuario.id;
+    }
+
+    if (cuerpo.accion === "eliminar_cuenta") {
+      // Rama aislada: no pasa por el flujo del estudiante.
+      const resultado = await eliminarCuenta(new CuentaSupabase(db, INFRA.BUCKET_EVIDENCIAS), usuario.id, cuerpo.confirmacion);
+      registro.usuarioId = null; // el usuario ya no existe: el registro queda anonimizado
+      await registro.registrar({ codigo: 902, contexto: { archivos_eliminados: resultado.archivos_eliminados } });
+      return responder(200, { ok: true, request_id: requestId, cuenta_eliminada: true, ...resultado });
     }
 
     if (cuerpo.accion === "diagnostico") {

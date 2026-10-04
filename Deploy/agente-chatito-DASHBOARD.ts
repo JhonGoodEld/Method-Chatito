@@ -1,9 +1,9 @@
 // =====================================================================
 // agente-chatito — ARCHIVO GENERADO AUTOMÁTICAMENTE. NO EDITAR A MANO.
 // Fuente: módulos de la carpeta agente-chatito/ → herramientas/empaquetar.ts
-// Módulos (20): errores.ts, tipos.ts, plan.ts, config.ts, datos.ts, completitud.ts, llm_tipos.ts, peticion.ts, salida_llm.ts, prompt.ts, puntaje.ts, secuenciacion.ts, reactivacion.ts, registro.ts, flujo_estudiante.ts, llm_claude.ts, llm_openrouter.ts, llm_fabrica.ts, redis.ts, index.ts
+// Módulos (21): errores.ts, tipos.ts, plan.ts, config.ts, cuenta.ts, datos.ts, completitud.ts, llm_tipos.ts, peticion.ts, salida_llm.ts, prompt.ts, puntaje.ts, secuenciacion.ts, reactivacion.ts, registro.ts, flujo_estudiante.ts, llm_claude.ts, llm_openrouter.ts, llm_fabrica.ts, redis.ts, index.ts
 // =====================================================================
-import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
+import { type SupabaseClient, createClient } from "npm:@supabase/supabase-js@2";
 import { z } from "npm:zod@3.23.8";
 import { Redis } from "npm:@upstash/redis@1";
 import { Ratelimit } from "npm:@upstash/ratelimit@2";
@@ -39,6 +39,7 @@ export const CATALOGO = {
   103: { nombre: "DB_NO_ENCONTRADO", http: 404, severidad: "warning", mensaje: "No encontramos el recurso solicitado." },
   104: { nombre: "DB_ESCRITURA", http: 500, severidad: "critico", mensaje: "No pudimos guardar tu progreso. Intenta de nuevo en un momento." },
   106: { nombre: "SUPABASE_NO_DISPONIBLE", http: 503, severidad: "critico", mensaje: "El servicio no está disponible en este momento. Intenta en unos minutos." },
+  107: { nombre: "CUENTA_NO_ELIMINADA", http: 500, severidad: "critico", mensaje: "No pudimos completar la eliminación de tu cuenta. Intenta de nuevo." },
   105: { nombre: "DB_CONFLICTO_CONCURRENCIA", http: 409, severidad: "warning", mensaje: "Tu sesión cambió mientras procesábamos la petición. Recarga e intenta de nuevo." },
 
   // ---------- 2xx Proveedor de IA ----------
@@ -60,6 +61,7 @@ export const CATALOGO = {
   308: { nombre: "IDIOMA_SIN_GRAFO", http: 500, severidad: "critico", mensaje: "Este idioma aún no tiene su arquitectura cargada." },
   309: { nombre: "GRAFO_INCONSISTENTE", http: 500, severidad: "critico", mensaje: "Hay un problema con la estructura del curso. Ya fue reportado." },
   310: { nombre: "ACCION_NO_ESPERADA", http: 409, severidad: "info", mensaje: "En este momento no se espera una respuesta; pulsa «continuar»." },
+  312: { nombre: "CONFIRMACION_REQUERIDA", http: 400, severidad: "info", mensaje: "Para eliminar tu cuenta debes confirmarlo explícitamente." },
   311: { nombre: "PETICION_EN_CURSO", http: 409, severidad: "info", mensaje: "Ya estamos procesando tu petición anterior. Espera un momento." },
 
   // ---------- 4xx Acceso ----------
@@ -72,11 +74,13 @@ export const CATALOGO = {
   501: { nombre: "REDIS_NO_DISPONIBLE", http: 503, severidad: "warning", mensaje: "Servicio temporalmente degradado." },
   502: { nombre: "STORAGE_FALLIDO", http: 500, severidad: "warning", mensaje: "No pudimos guardar tu imagen, pero tu respuesta sí quedó registrada." },
   503: { nombre: "MODO_NO_IMPLEMENTADO", http: 501, severidad: "info", mensaje: "Este modo todavía no está disponible." },
+  504: { nombre: "STORAGE_BORRADO_FALLIDO", http: 500, severidad: "critico", mensaje: "No pudimos eliminar tus archivos. Tu cuenta sigue intacta; intenta de nuevo." },
   598: { nombre: "CONFIGURACION_INVALIDA", http: 500, severidad: "critico", mensaje: "El servicio está mal configurado. Ya fue reportado." },
   599: { nombre: "ERROR_INESPERADO", http: 500, severidad: "critico", mensaje: "Ocurrió un error inesperado. Ya fue reportado." },
 
   // ---------- 9xx Telemetría ----------
   900: { nombre: "LLM_USO", http: 200, severidad: "info", mensaje: "Uso del proveedor de IA." },
+  902: { nombre: "CUENTA_ELIMINADA", http: 200, severidad: "info", mensaje: "Cuenta eliminada a petición del titular." },
   901: { nombre: "DECISION_SECUENCIACION", http: 200, severidad: "info", mensaje: "Decisión de MC-009 registrada." },
 } as const satisfies Record<number, DefinicionError>;
 
@@ -530,6 +534,112 @@ export function validarDatosCanonicos(): void {
   validado = true;
 }
 
+// ───────────── cuenta.ts ─────────────
+// cuenta.ts — Eliminación de la cuenta (derecho de cancelación ARCO; requisito
+// de App Store y Google Play). Módulo AISLADO: no toca el flujo del estudiante.
+//
+// Qué se borra y cómo:
+//   1. Fotos de evidencia en Storage (carpeta <usuario>/): Storage NO se borra
+//      en cascada, así que se recorre y se elimina aquí.
+//   2. El usuario de Supabase Auth. La base de datos borra en cascada todo lo
+//      demás: perfil, idiomas, evidencia, progreso, puntajes, sesiones, pila y
+//      solicitudes. logs_sistema queda anonimizado (usuario_id → null).
+//
+// Orden deliberado: primero las fotos, después el usuario. Si falla el paso 1,
+// la cuenta sigue intacta y el usuario puede reintentar sin perder nada. Si
+// fallara el paso 2, las fotos ya no están pero un reintento termina el borrado.
+//
+// Las claves de Upstash (límites, candado) solo contienen el id y caducan solas.
+// Lo ya enviado a proveedores de IA no puede recuperarse desde aquí: se
+// declara en el aviso de privacidad.
+
+
+/** Texto que el usuario debe enviar, literal, para confirmar. */
+export const FRASE_CONFIRMACION = "ELIMINAR";
+
+export interface ServiciosCuenta {
+  /** Entradas directas de una carpeta: archivos (esCarpeta=false) y subcarpetas. */
+  listar(carpeta: string): Promise<Array<{ nombre: string; esCarpeta: boolean }>>;
+  borrarArchivos(rutas: string[]): Promise<void>;
+  eliminarUsuario(usuarioId: string): Promise<void>;
+}
+
+export interface ResultadoEliminacion {
+  archivos_eliminados: number;
+}
+
+/** Recorre recursivamente la carpeta y devuelve todas las rutas de archivo. */
+export async function listarRecursivo(servicios: ServiciosCuenta, carpeta: string, profundidad = 0): Promise<string[]> {
+  if (profundidad > 10) throw new ErrorApp(504, `Estructura de carpetas demasiado profunda en ${carpeta}`);
+  const rutas: string[] = [];
+  for (const entrada of await servicios.listar(carpeta)) {
+    const ruta = `${carpeta}/${entrada.nombre}`;
+    if (entrada.esCarpeta) rutas.push(...(await listarRecursivo(servicios, ruta, profundidad + 1)));
+    else rutas.push(ruta);
+  }
+  return rutas;
+}
+
+export async function eliminarCuenta(
+  servicios: ServiciosCuenta,
+  usuarioId: string,
+  confirmacion: string | undefined,
+): Promise<ResultadoEliminacion> {
+  if (confirmacion !== FRASE_CONFIRMACION) {
+    throw new ErrorApp(312, `Confirmación ausente o incorrecta (se esperaba "${FRASE_CONFIRMACION}")`);
+  }
+
+  // 1. Fotos de evidencia.
+  let rutas: string[];
+  try {
+    rutas = await listarRecursivo(servicios, usuarioId);
+    for (let i = 0; i < rutas.length; i += 100) {
+      await servicios.borrarArchivos(rutas.slice(i, i + 100));
+    }
+  } catch (e) {
+    if (e instanceof ErrorApp) throw e;
+    throw new ErrorApp(504, `Storage: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // 2. Usuario (la base de datos borra el resto en cascada).
+  try {
+    await servicios.eliminarUsuario(usuarioId);
+  } catch (e) {
+    throw new ErrorApp(107, `Auth: ${e instanceof Error ? e.message : String(e)}`, { archivos_ya_eliminados: rutas.length });
+  }
+
+  return { archivos_eliminados: rutas.length };
+}
+
+/** Implementación real sobre Supabase (service role). */
+export class CuentaSupabase implements ServiciosCuenta {
+  constructor(private readonly db: SupabaseClient, private readonly bucket: string) {}
+
+  async listar(carpeta: string): Promise<Array<{ nombre: string; esCarpeta: boolean }>> {
+    const entradas: Array<{ nombre: string; esCarpeta: boolean }> = [];
+    const limite = 1000;
+    for (let offset = 0;; offset += limite) {
+      const { data, error } = await this.db.storage.from(this.bucket).list(carpeta, { limit: limite, offset });
+      if (error) throw new Error(`listar ${carpeta}: ${error.message}`);
+      // En Storage, las carpetas aparecen con id null.
+      for (const o of data ?? []) entradas.push({ nombre: o.name, esCarpeta: o.id === null });
+      if (!data || data.length < limite) break;
+    }
+    return entradas;
+  }
+
+  async borrarArchivos(rutas: string[]): Promise<void> {
+    if (rutas.length === 0) return;
+    const { error } = await this.db.storage.from(this.bucket).remove(rutas);
+    if (error) throw new Error(`borrar archivos: ${error.message}`);
+  }
+
+  async eliminarUsuario(usuarioId: string): Promise<void> {
+    const { error } = await this.db.auth.admin.deleteUser(usuarioId);
+    if (error) throw new Error(error.message);
+  }
+}
+
 // ───────────── datos.ts ─────────────
 // datos.ts — Acceso a datos (patrón repositorio).
 //
@@ -936,6 +1046,7 @@ export async function detalleError(res: Response): Promise<string> {
 //   { "modo": "estudiante", "accion": "responder",  "alumno_idioma_id": "<uuid>",
 //     "mensaje": "texto opcional", "imagenes": [{ "media_type": "image/jpeg", "base64": "..." }] }
 //   { "accion": "diagnostico", "probar_llm": false }            (solo rol admin)
+//   { "accion": "eliminar_cuenta", "confirmacion": "ELIMINAR" }  (borra TODO, irreversible)
 
 
 const Modo = z.enum(["estudiante", "docente_aprender", "docente_crear"]).default("estudiante");
@@ -955,6 +1066,7 @@ export const CuerpoSchema = z.discriminatedUnion("accion", [
     imagenes: z.array(ImagenSchema).max(INFRA.MAX_IMAGENES).optional(),
   }),
   z.object({ accion: z.literal("diagnostico"), modo: Modo, probar_llm: z.boolean().optional() }),
+  z.object({ accion: z.literal("eliminar_cuenta"), modo: Modo, confirmacion: z.string().max(50).optional() }),
 ]);
 
 export type Cuerpo = z.infer<typeof CuerpoSchema>;
@@ -3198,6 +3310,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
       const adquirido = await protegerRedis(registro, () => redis!.adquirirCandado(usuario.id, requestId), true);
       if (!adquirido) throw new ErrorApp(311, "Otra petición del mismo usuario está en curso");
       usuarioConCandado = usuario.id;
+    }
+
+    if (cuerpo.accion === "eliminar_cuenta") {
+      // Rama aislada: no pasa por el flujo del estudiante.
+      const resultado = await eliminarCuenta(new CuentaSupabase(db, INFRA.BUCKET_EVIDENCIAS), usuario.id, cuerpo.confirmacion);
+      registro.usuarioId = null; // el usuario ya no existe: el registro queda anonimizado
+      await registro.registrar({ codigo: 902, contexto: { archivos_eliminados: resultado.archivos_eliminados } });
+      return responder(200, { ok: true, request_id: requestId, cuenta_eliminada: true, ...resultado });
     }
 
     if (cuerpo.accion === "diagnostico") {

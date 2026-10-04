@@ -5,6 +5,7 @@
 //   { "modo": "estudiante", "accion": "responder",  "alumno_idioma_id": "<uuid>",
 //     "mensaje": "texto opcional", "imagenes": [{ "media_type": "image/jpeg", "base64": "..." }] }
 //   { "accion": "diagnostico", "probar_llm": false }            (solo rol admin)
+//   { "accion": "eliminar_cuenta", "confirmacion": "ELIMINAR" }  (borra TODO, irreversible)
 
 import { z } from "npm:zod@3.23.8";
 import { INFRA } from "./config.ts";
@@ -28,6 +29,7 @@ export const CuerpoSchema = z.discriminatedUnion("accion", [
     imagenes: z.array(ImagenSchema).max(INFRA.MAX_IMAGENES).optional(),
   }),
   z.object({ accion: z.literal("diagnostico"), modo: Modo, probar_llm: z.boolean().optional() }),
+  z.object({ accion: z.literal("eliminar_cuenta"), modo: Modo, confirmacion: z.string().max(50).optional() }),
 ]);
 
 export type Cuerpo = z.infer<typeof CuerpoSchema>;
