@@ -1,7 +1,7 @@
 // =====================================================================
 // agente-chatito — ARCHIVO GENERADO AUTOMÁTICAMENTE. NO EDITAR A MANO.
 // Fuente: módulos de la carpeta agente-chatito/ → herramientas/empaquetar.ts
-// Módulos (21): errores.ts, tipos.ts, plan.ts, config.ts, cuenta.ts, datos.ts, completitud.ts, llm_tipos.ts, peticion.ts, salida_llm.ts, prompt.ts, puntaje.ts, secuenciacion.ts, reactivacion.ts, registro.ts, flujo_estudiante.ts, llm_claude.ts, llm_openrouter.ts, llm_fabrica.ts, redis.ts, index.ts
+// Módulos (22): errores.ts, tipos.ts, plan.ts, config.ts, cuenta.ts, datos.ts, completitud.ts, llm_tipos.ts, peticion.ts, alcance.ts, salida_llm.ts, prompt.ts, puntaje.ts, secuenciacion.ts, reactivacion.ts, registro.ts, flujo_estudiante.ts, llm_claude.ts, llm_gemini.ts, llm_fabrica.ts, redis.ts, index.ts
 // =====================================================================
 import { type SupabaseClient, createClient } from "npm:@supabase/supabase-js@2";
 import { z } from "npm:zod@3.23.8";
@@ -49,6 +49,7 @@ export const CATALOGO = {
   204: { nombre: "LLM_TIEMPO_AGOTADO", http: 504, severidad: "error", mensaje: "El agente tardó demasiado en responder. Intenta de nuevo." },
   205: { nombre: "LLM_NO_CONFIGURADO", http: 500, severidad: "critico", mensaje: "El agente no está configurado todavía." },
   206: { nombre: "LLM_ERROR_PROVEEDOR", http: 502, severidad: "error", mensaje: "El proveedor del agente falló. Intenta de nuevo." },
+  208: { nombre: "LLM_MODELO_NO_DISPONIBLE", http: 502, severidad: "critico", mensaje: "El agente no está disponible por un problema de configuración. Ya fue reportado." },
   207: { nombre: "LLM_SIN_CREDITO", http: 502, severidad: "critico", mensaje: "El agente no está disponible en este momento (cuota agotada)." },
 
   // ---------- 3xx Negocio y validación ----------
@@ -61,6 +62,7 @@ export const CATALOGO = {
   308: { nombre: "IDIOMA_SIN_GRAFO", http: 500, severidad: "critico", mensaje: "Este idioma aún no tiene su arquitectura cargada." },
   309: { nombre: "GRAFO_INCONSISTENTE", http: 500, severidad: "critico", mensaje: "Hay un problema con la estructura del curso. Ya fue reportado." },
   310: { nombre: "ACCION_NO_ESPERADA", http: 409, severidad: "info", mensaje: "En este momento no se espera una respuesta; pulsa «continuar»." },
+  313: { nombre: "CONSENTIMIENTO_PENDIENTE", http: 403, severidad: "info", mensaje: "Antes de empezar debes aceptar el Aviso de Privacidad y los Términos." },
   312: { nombre: "CONFIRMACION_REQUERIDA", http: 400, severidad: "info", mensaje: "Para eliminar tu cuenta debes confirmarlo explícitamente." },
   311: { nombre: "PETICION_EN_CURSO", http: 409, severidad: "info", mensaje: "Ya estamos procesando tu petición anterior. Espera un momento." },
 
@@ -245,6 +247,8 @@ export interface ErrorDetectado {
   fuera_de_scope: boolean;
   unidad_relacionada: string | null;
   nivel: number | null;
+  /** Fuera del alcance: identificador del grafo dueño, según las fronteras del livrable (MC-001 §7.5). */
+  propietario?: string | null;
 }
 
 export type Intento = "inicial" | "complemento" | "correccion";
@@ -262,6 +266,10 @@ export interface MetricasEvidencia {
   errores_senalados?: number;
   errores_corregidos?: number;
   diagnostico_diferido?: boolean;
+  /** Cambio 13: condiciones de contenido de la étape 15 que reportó la IA. */
+  condiciones?: Array<{ nivel: number | null; condicion: string; cumple: boolean; detalle: string }>;
+  /** Cambio 15: quién contó total_entregado. */
+  conteo?: "codigo" | "ia";
   archivos?: string[];
 }
 
@@ -306,6 +314,36 @@ export interface ErrorSenalado {
   causa?: string;
   /** Paso de producción donde apareció el error. */
   paso?: string;
+  /** Error fuera del alcance de la lección (MC-001 §7.5): su propietario, para mostrarlo. */
+  tema?: string;
+  /** Fila de errores_diferidos que este error salda al corregirse. */
+  diferido_id?: string;
+}
+
+/** Fila de errores_diferidos (migración 005): solo pendientes; se borra al corregirse. */
+export interface ErrorDiferidoNuevo {
+  alumno_idioma_id: string;
+  propietario: string;
+  unidad_origen: string;
+  fragmento: string;
+  correccion: string;
+  explicacion: string;
+  causa: string | null;
+}
+export interface ErrorDiferido extends ErrorDiferidoNuevo {
+  id: string;
+  creado_en: string;
+}
+
+/** Cambio 19: error fuera del alcance de la lección; se muestra en la étape 17 sin evaluarse. */
+export interface Observacion {
+  fragmento: string;
+  correccion: string;
+  paso?: string;
+  /** Identificador del grafo dueño (MC-001 §7.5), ya normalizado; null si no tiene. */
+  propietario?: string | null;
+  explicacion?: string;
+  causa?: string;
 }
 
 export interface Requisitos {
@@ -317,7 +355,11 @@ export interface Requisitos {
   errores_senalados?: ErrorSenalado[];
   /** Errores de pasos con corrección diferida, pendientes para la étape 17. */
   errores_acumulados?: ErrorSenalado[];
+  /** Cambio 19: errores fuera del alcance, solo para mostrarlos en la étape 17. */
+  observaciones_acumuladas?: Observacion[];
   ultimo_mensaje_agente?: string;
+  /** Cambio 16: lo que aún falta, para repetirlo al retomar con «continuar». */
+  ultimo_mensaje_sistema?: string;
   justificacion_secuenciacion?: string[];
   bloqueo?: { razon: string; unidad_id?: string; dominio_id?: string };
 }
@@ -346,6 +388,8 @@ export interface EstadoPublico {
   paso: string | null;
   fase: FasePublica;
   niveles?: NivelRequerido[];
+  /** Cambio 2: los ejercicios pedidos, mientras se espera la evidencia. */
+  enunciado?: string;
   errores_pendientes?: number;
   bloqueo?: Requisitos["bloqueo"];
 }
@@ -358,6 +402,8 @@ export interface SugerenciaReactivacion {
 
 export interface RespuestaFlujo {
   mensaje_agente: string | null;
+  /** Cambio 5: la presentación por étapes, para que el frontend la muestre en bloques. */
+  secciones?: Array<{ etapa: number; titulo: string; texto: string }>;
   mensaje_sistema: string | null;
   resultado?: "avanza" | "requiere_completar" | "requiere_correccion" | "correccion_incompleta" | "unidad_completada";
   estado: EstadoPublico;
@@ -443,7 +489,7 @@ export function describirEtapas(ciclo: EtapaCiclo[], numeros: number[]): string 
 // módulo: así las pruebas no necesitan variables de entorno y un secret
 // ausente produce un error con código (598/205), no un fallo opaco.
 
-const mcJson = {"documento":"MC-OPERACIONAL","version":"1.5.0","historial":[{"version":"1.0.0","cambio":"Versión inicial."},{"version":"1.1.0","cambio":"Tras la ejecución piloto FR-411: (a) regla de scope de corrección (el agente solo corrige el objetivo de la unidad activa, nunca dominios no enseñados); (b) regla de agrupación de evidencia por turno (agrupar niveles que no dependan de corrección previa, nunca reordenar étapes); (c) motor_reactivacion formalizado en consolidacion_continua; (d) puntaje_leccion añadido a evidencia_y_estado, con alcance acotado (ver nota_MC002_S17)."},{"version":"1.2.0","cambio":"Formalización de modos_operacion (estudiante, docente_aprender, docente_crear), a partir del diagrama de flujo de navegación de la app. docente_crear queda explícitamente marcado como no probado, pendiente por tiempo indefinido."},{"version":"1.3.0","cambio":"Preparación para la Edge Function: (a) CORRECCIÓN de un error introducido en v1.0.0: 'etapas_en_orden' mezclaba el ciclo de 12 étapes con los números de SECCIÓN 14/15/17 de MC-001 y omitía corrección y transformación — reemplazada por ciclo_12_etapas + precisiones_mc001 + plan_ejecucion; (b) reglas operativas v1 de secuenciación (accesibilidad, dominio agotado, bloqueo por falta de contenido, política de desempate PROPUESTA); (c) regla provisional de transición de estados; (d) parámetros numéricos del motor de reactivación y factor de completitud como datos, no como texto."},{"version":"1.4.0","cambio":"Contrastado con MC-001 v1.0.2 real: (a) numeración de étapes = la de MC-001 (8–19, igual a su número de sección), con 'posicion' 1–12 del ciclo; (b) corrección DIFERIDA: la étape 17 corrige juntas las producciones de las étapes 15 y 16 (MC-001 §17 fase 1), ya no después de cada nivel; (c) niveau 3 = production libre (categoría libre); (d) descripciones de los 3 niveaux de MC-001 §15. Se retira la marca 'a ratificar' sobre 14/15/17: confirmado."},{"version":"1.5.0","cambio":"Alineado con MC-001 v1.0.3: (a) la étape 18 (transformación) NO se corrige (decisión J. Good): sus errores se registran como evidencia, sin corrección ni reescritura; se mantiene la completitud del 80%; (b) se documenta la separación contenido fijo / contenido generado (MC-001 §7.2–§7.4)."}],"proposito":"Capa operativa derivada de la saga MC-00X (Método Chatito). Contiene solo las reglas que el agente de IA debe aplicar en tiempo de ejecución, sin la justificación narrativa ni el historial de decisiones que sí viven en los documentos MC originales del repositorio. Es agnóstica de idioma: se usa igual para FR, KO, EN o cualquier arquitectura futura.","fuente_canonica":"https://github.com/JhonGoodEld/Method-Chatito (carpeta Specification/MC)","principios_rectores":{"P7_progresion_por_profundidad":{"regla":"La profundidad de una unidad transformacional se gestiona vía MC-009, no vía intuición del agente en el momento."},"P8_declarativo_procedimental":{"regla":"El agente NUNCA decide qué existe en la lengua (eso vive en las tablas XX-X00 declarativas). El agente solo decide CÓMO enseñarlo, dentro de las reglas de esta capa."},"P9_ejecucion_interactiva":{"regla":"Un documento de lección describe; el agente ejecuta. Prohibido: (a) que el agente reescriba o reinterprete la definición declarativa durante la conversación, (b) que la conversación misma se convierta en la fuente de la definición.","evidencia_previa":"Nunca se descarta evidencia ya recolectada, aunque cambie el estado del alumno.","reactivacion":"Es un evento posterior y distinto, gobernado por MC-006, no por la ejecución de la lección en curso."},"P10_separacion_declaracion_secuenciamiento":{"regla":"El ID o número de un livrable (ej. KO-511, EN-411) NO determina su prioridad ni orden de enseñanza. El orden SIEMPRE se decide vía el grafo de MC-009, nunca por numeración ni por razonamiento libre del LLM.","error_historico_a_evitar":"No elegir una lección 'porque existe' o 'porque es autocontenida' — ese razonamiento viola este principio aunque parezca práctico."}},"leccion":{"fuente":"MC-001 — Structure Standard d'une Leçon v1.0.3.","regla_maestra":"No se avanza a la etapa N+1 sin haber completado y declarado la etapa N. El agente no puede saltar a producción/ejercicios antes de declarar el conocimiento completo.","ciclo_12_etapas":[{"n":8,"posicion":1,"nombre":"description","tipo":"presentacion"},{"n":9,"posicion":2,"nombre":"utilisation","tipo":"presentacion"},{"n":10,"posicion":3,"nombre":"structure","tipo":"presentacion"},{"n":11,"posicion":4,"nombre":"expressions_frequentes","tipo":"presentacion"},{"n":12,"posicion":5,"nombre":"erreurs_frequentes","tipo":"presentacion"},{"n":13,"posicion":6,"nombre":"exemples","tipo":"presentacion"},{"n":14,"posicion":7,"nombre":"notes_et_exceptions","tipo":"presentacion","incluye":"transformations_prevues (declarativo)"},{"n":15,"posicion":8,"nombre":"exercices_guides","tipo":"produccion","incluye":"formes_evidence_attendues (declarativo, obligatorio)","niveles":{"1":"Transformation — transformar frases dadas según una consigna precisa (aplicación directa de la regla)","2":"Phrases — construir frases propias a partir de elementos dados (contextualización guiada)","3":"Production libre — producir libremente, sin soporte dado (escrita, oral, o foto de producción manuscrita)"}},{"n":16,"posicion":9,"nombre":"production_ecrite","tipo":"produccion"},{"n":17,"posicion":10,"nombre":"correction_detaillee","tipo":"correccion"},{"n":18,"posicion":11,"nombre":"transformation","tipo":"produccion"},{"n":19,"posicion":12,"nombre":"vocabulaire","tipo":"presentacion"}],"precisiones_mc001":{"etape_14_transformations_prevues":"Declarativo: anticipa las transformaciones que se ejecutarán en la étape 18. No las ejecuta.","etape_15_formes_evidence_attendues":"Declarativo y OBLIGATORIO: la LECCIÓN (livrable) precisa, por nivel, el tipo exacto de producción exigida, antes de ejecutar. Si el livrable no lo declara, el agente lo señala y usa los ejemplos de MC-001 §15.","etape_17_correction_detaillee":{"fases_obligatorias_en_orden":["collecte_evidence","correction_differee","diagnostic"],"fuentes":"Las producciones de las étapes 15 y 16 (MC-001 §17, fase 1).","regla":"Ninguna fase empieza antes de que termine la anterior. La corrección es frase por frase con explicación gramatical; el diagnóstico clasifica cada error con la tipología de MC-002 §13."},"etape_18_sin_correccion":"MC-001 v1.0.3 §18: la transformación no se corrige. Sus errores se consignan como evidencia (MC-002) sin corrección ni exigencia de reescritura."},"plan_ejecucion":{"nota":"Orden de ENTREGA en turnos. Agrupa sin reordenar el ciclo. Producciones con correccion 'diferida' acumulan sus errores hasta el paso de corrección (étape 17).","etapa_correccion":17,"pasos":[{"paso":"presentacion","etapas":[8,9,10,11,12,13,14],"tipo":"presentacion","declara_antes_de_producir":["etape_14_transformations_prevues","etape_15_formes_evidence_attendues"]},{"paso":"exercices_n1_n2","etapas":[15],"tipo":"produccion","niveles":[1,2],"categoria":"guiada","correccion":"diferida"},{"paso":"exercices_n3","etapas":[15],"tipo":"produccion","niveles":[3],"categoria":"libre","correccion":"diferida"},{"paso":"production_ecrite","etapas":[16],"tipo":"produccion","niveles":[null],"categoria":"libre","correccion":"diferida"},{"paso":"correction","etapas":[17],"tipo":"correccion","fuentes":["exercices_n1_n2","exercices_n3","production_ecrite"]},{"paso":"transformation","etapas":[18],"tipo":"produccion","niveles":[null],"categoria":"guiada","correccion":"ninguna"},{"paso":"vocabulaire","etapas":[19],"tipo":"presentacion","cierra_unidad":true}]},"numeracion":"n = número de étape de MC-001, que coincide con su número de sección (8–19); posicion = lugar en el ciclo de 12 (MC-000 §10). Toda referencia 'étape N' en documentos, evidencia y registros usa n.","contenido_fijo_y_generado":{"fuente":"MC-001 v1.0.3 §7.2–§7.4","regla":"Lo que varía es la manera de enseñar, nunca lo que se enseña. Lo que se corrige es la evidencia del alumno, confrontada con el contenido fijo.","fijo":"Del livrable validado: regla, uso, formas, expresiones, errores frecuentes con causa, notas y excepciones, transformaciones previstas, niveles y formas de evidencia, criterio de producción escrita, lista de vocabulario, portée.","generado":"Por el agente en cada sesión: formulación de las explicaciones, al menos 5 ejemplos nuevos (étape 13), ítems de los ejercicios, tema de la producción escrita, corrección y diagnóstico de la evidencia real, frases transformadas.","prohibido":"Añadir, quitar o modificar reglas, excepciones, criterios o formas de evidencia; copiar los ejemplos de referencia del livrable."}},"evidencia_y_estado":{"fuente":"MC-002 — Modèle d'Apprentissage","estados_posibles":["non_acquis","en_cours","acquis","consolide"],"principio_evidencia_no_igual_estado":"El estado es una inferencia; la evidencia es el registro bruto que la sustenta. La evidencia NUNCA se borra ni se sobrescribe, aunque el estado cambie.","modelo_observacion":{"pasos":8,"regla":"Un cambio de estado requiere haber completado el modelo de observación de 8 pasos, no una sola respuesta correcta o incorrecta."},"no_regresion_automatica":"Una respuesta incorrecta puntual NO degrada automáticamente el estado del alumno; requiere el diagnóstico completo de la etapa 17.","formula_consolidacion":"Se descubre empíricamente por idioma/alumno — el agente no debe asumir un umbral fijo universal.","regla_de_scope_de_correccion":{"origen":"Piloto FR-411 (v1.1.0) — el alumno produjo estructuras de dominios no enseñados aún (ej. conjugación verbal en una lección de género nominal).","regla":"El agente corrige ÚNICAMENTE el objetivo declarado de la unidad activa. Errores de otros dominios se observan y se registran como evidencia (nunca se descartan, Principio 9), pero NO se corrigen ni se evalúan fuera de secuencia — evita violar el Principio 7 (profundidad antes que anchura)."},"puntaje_leccion":{"origen":"Piloto FR-411 (v1.1.0) — necesario como señal de entrada para consolidacion_continua.motor_reactivacion, NO como evaluación pedagógica.","nota_MC002_S17":"MC-002 §17 prohíbe explícitamente reducir la evaluación pedagógica a una nota aditiva de sus 6 dimensiones diagnósticas (exactitude, adéquation, maîtrise structurelle, autonomie, stabilité, flexibilité). Este puntaje NO es esa nota — es una métrica de alcance acotado, exclusiva para alimentar la priorización de reactivación de MC-006. La decisión pedagógica de MC-002 §18 sigue siendo cualitativa y nunca se sustituye por este número.","formula":"puntaje_leccion = (peso_produccion_espontanea × %acierto_produccion_libre) + (peso_produccion_guiada × %acierto_ejercicios_y_transformacion)","pesos_iniciales_a_calibrar":{"peso_produccion_espontanea":0.6,"peso_produccion_guiada":0.4,"justificacion":"MC-002 §26 (Principe de production authentique): la producción espontánea mide mejor la mobilización real que la sollicitée. Confirmado empíricamente en FR-411: 100% en producción libre vs. 25% en ejercicio guiado al primer intento — evidencias de naturaleza distinta, no equivalentes."},"regla_de_calculo_v1":"Se usa la última evidencia ANTERIOR a la corrección de cada paso (primer intento completo). Guiada: correctos / total_pedido (denominador del sistema, no del LLM). Libre: correctos / ocurrencias del objetivo. Si una categoría no tiene datos, se renormalizan los pesos."},"regla_transicion_estados_v1":{"estado":"Regla operativa PROVISIONAL mientras el modelo de 8 pasos no esté formalizado.","non_acquis_a_en_cours":"Al iniciar la unidad (MC-009 la selecciona).","en_cours_a_acquis":"Al completar el ciclo MC-001 con todos los umbrales superados (completitud 80% y corrección 100%).","a_consolide":"NO automático en v1: exige evidencia de reactivación fuera de la lección original (MC-002 §8.4, MC-006). Pendiente.","nunca":"Ninguna transición es regresiva de forma automática (MC-002 §29)."}},"transformacion":{"fuente":"MC-004 — Consolidation par Transformation","mecanismos":["controlee","guidee","autonome","inverse","chainage","croisee"],"unidad_transformacional":"Entidad formal mínima sobre la que se aplica un mecanismo de transformación; es el objeto que lleva el estado de MC-002."},"vocabulario":{"fuente":"MC-005 — Gestion du Vocabulaire","criterio_priorizacion":["frecuencia","utilidad","reutilizacion"],"distincion":"activo (el alumno debe producirlo) vs pasivo (el alumno debe reconocerlo)"},"consolidacion_continua":{"fuente":"MC-006 — Consolidation Continue","estrategias":["hasard","dependance","erreurs_frequentes","temporelle"],"nota":"Una 'ruleta' de repaso aleatorio es solo UNA implementación posible de la estrategia 'hasard', no la estrategia completa.","motor_reactivacion":{"origen":"Formalizado en v1.1.0, cierra 3 ítems del roadmap de MC-006 §30 (representación formal de prioridad, combinación de las 4 estrategias, cálculo del intervalo entre reactivaciones).","principio_no_negociable":"El cálculo de prioridad de reactivación NUNCA sobrescribe el campo 'estado' de una unidad directamente — viola MC-002 §29 y MC-006 §25.5 (régression artificielle). Solo dispara una reactivación real; el estado únicamente cambia cuando esa reactivación produce evidencia nueva, evaluada por el modelo de 8 pasos de MC-002.","hasard":{"tratamiento":"Sorteo INDEPENDIENTE de la fórmula ponderada, no una de las señales sumadas. Con probabilidad p_azar en cada sesión, se ignora la prioridad calculada y se reactiva una unidad al azar entre las ya consolidadas.","p_azar_inicial_a_calibrar":0.08,"justificacion":"Sumarlo a la fórmula le daría peso conceptual de 'evidencia de olvido' que no tiene — MC-006 §11 solo pide que exista, sin dominar la selección."},"formula_prioridad_reactivacion":{"entradas":{"errores_en_unidades_dependientes":"Conteo de diagnósticos en lecciones POSTERIORES que señalan esta unidad como causa del error (MC-002 §15).","profundidad_de_rama":"Cuántas unidades subsecuentes ya se enseñaron desde que esta unidad se consolidó (vía XX-GRAFO) — implementa MC-006 §12 (révision par dépendance).","dias_desde_ultima_evidencia":"Días desde la fila más reciente en evidencia para esta unidad — implementa MC-006 §14 (révision temporelle), como curva creciente, no lineal fija."},"formula":"prioridad = (w_errores × normalizar(errores_en_unidades_dependientes)) + (w_dependencia × normalizar(profundidad_de_rama)) + (w_tiempo × curva_creciente(dias_desde_ultima_evidencia))","pesos_iniciales_a_calibrar":{"w_errores":0.5,"w_dependencia":0.2,"w_tiempo":0.3,"justificacion":"Orden de prioridad según MC-006 §25.3 (los errores pueden aumentar prioridad, no pueden monopolizarla) y el principio de profundidad de MC-000 §8.7 — errores activos sobre conocimiento previo bloquean avance real, por eso pesan más que el simple paso del tiempo."},"disparo":"Si prioridad supera un umbral configurable, se genera una reactivación real (MC-006 §9: forma distinta a la lección original, nunca repetición mecánica — prohibido por §25.1).","parametros_normalizacion_iniciales_a_calibrar":{"tope_errores":5,"tope_profundidad":10,"tau_dias":14,"umbral_disparo":0.5,"definiciones":"normalizar(x) = min(x / tope, 1); curva_creciente(dias) = 1 - exp(-dias / tau_dias)."}},"candidatos_v1":"Unidades en estado acquis o consolide, excluyendo la recién completada. v1.1.0 decía 'consolidadas'; se amplía a acquis porque reactivar lo adquirido es el camino hacia consolidé (MC-006 §5). A ratificar.","momento_de_evaluacion_v1":"Al cierre de cada unidad, no en cada mensaje, para no interrumpir la lección en curso.","salida_v1":"Solo una SUGERENCIA de reactivación; la lección de reactivación (forma distinta, MC-006 §9) no está implementada en v1."}},"fonologia_y_escritura":{"fuente":"MC-008 — Prononciation et Systèmes d'Écriture","interlingua":"IPA se usa como sistema de representación intermedio entre cualquier lengua origen y destino.","puente_fonetico":["representation","comparaison","interpretation"],"implementacion_referencia":"hangulito (módulo Fonetizador) — no requiere deep learning, es un problema de reglas + tablas de mapeo"},"secuenciacion":{"fuente":"MC-009 — Moteur de Séquencement Curriculaire","regla_maestra":"El orden de enseñanza lo decide EXCLUSIVAMENTE el grafo de prerrequisitos declarado en la tabla canónica XX-000 del idioma activo. El agente nunca decide el orden por numeración, por 'lo que existe', ni por razonamiento libre.","fuente_de_datos_requerida":"tabla_canonica_XX-000 (ejemplo: KO-000 v9.0) — Type (sequentiel/transversal) + Prerequis por dominio","criterio_seleccion_desempate":"potentiel_d_expansion (nodo → cuántas ramas nuevas habilita)","mecanismo_detour":"Si una rama se interrumpe (ej. por dificultad detectada), se apila y se puede retomar después sin perder el progreso.","nodos_transversales":{"regla":"No compiten por turno de enseñanza secuencial. Se consumen incrementalmente en paralelo.","activacion_reforzada":"Solo se prioriza un nodo transversal fuera de su consumo incremental normal si MC-002 detecta dificultad persistente asociada a él."},"distincion_critica":"orden_de_construccion (documental, taxonómico, gobierna en qué secuencia se REDACTAN los documentos XX-X00) ≠ orden_de_enseñanza (este motor, gobierna en qué secuencia se ENSEÑAN los dominios al alumno). Nunca usar uno para decidir el otro.","regla_accesibilidad_v1":"Un nodo es accesible si todos sus prerrequisitos fueron ENSEÑADOS (MC-009 §8), no consolidados. En v1, 'enseñada' = unidad en estado acquis o consolide (ciclo MC-001 completado). Un prerrequisito que sea un dominio transversal se considera siempre satisfecho (MC-009 §21).","dominio_agotado_v1":"Un dominio secuencial está agotado cuando tiene al menos una lección declarada y todas sus lecciones declaradas fueron enseñadas. Un dominio sin lecciones declaradas NUNCA se considera agotado: bloquea en lugar de saltarse (Principio 7).","bloqueo_por_falta_de_contenido":"Si la siguiente lección de la rama activa está declarada pero no redactada, el motor se BLOQUEA (código 305) en lugar de abrir otra rama: saltar de rama por falta de contenido violaría la progresión por profundidad. El bloqueo se registra para que el autor sepa qué lección redactar.","orden_intra_dominio":"Dentro de un dominio: primer sous-domaine en el orden en que la arquitectura lo declara, y dentro de él el primer contenido declarado (MC-009 §21), salvo prerrequisitos explícitos de lección.","politica_desempate_declarada":{"estado":"PROPUESTA — pendiente de ratificación. MC-009 §9 exige que el criterio secundario sea declarado; MC-009 §26 lo deja sin definir.","criterios_en_orden":["contenido_disponible","orden_declaracion_arquitectura"],"descripcion":{"contenido_disponible":"Entre ramas de igual potencial, preferir aquella cuya siguiente lección ya está redactada.","orden_declaracion_arquitectura":"Si persiste el empate, el orden en que la arquitectura (XX-GRAFO) declara sus dominios."},"trazabilidad":"Cada uso del desempate queda en la justificación de la decisión (MC-009 §23)."},"no_implementado_v1":["Aceleración e interrupción pedagógica (MC-009 §17): la interfaz MC-002↔MC-009 no está definida (MC-009 §26).","Activación reforzada de nodos transversales por dificultad persistente (MC-009 §16): el umbral de 'difficulté persistante' no está definido (MC-002 §32)."]},"modos_operacion":{"origen":"Formalizado en v1.2.0, a partir del diagrama de flujo de navegación de la app (rol docente/estudiante) discutido antes de la piloto FR-411.","regla_general":"El modo no es un documento operativo aparte — es un parámetro que el backend pasa al prompt. Todo modo reutiliza MC-OPERACIONAL y/o LG-OPERACIONAL tal cual existen; nunca se duplica contenido de las 12 etapas de MC-001 por modo.","estudiante":{"usa":"MC-OPERACIONAL completo (leccion + evidencia_y_estado + consolidacion_continua).","limite_idiomas":{"max_idiomas_en_curso":3,"max_solicitudes_idioma_nuevo_pendientes":1,"regla_anti_desperdicio":"Antes de registrar una solicitud como 'idioma nuevo', el backend verifica primero si el idioma YA EXISTE en el catálogo (aunque esté con activo=false, precargado). Si existe, se asigna directo como uno de los 3 — la solicitud NUNCA se consume por un idioma que ya estaba disponible."},"nivel_previo":"El agente NUNCA pregunta nivel de conocimiento previo. Toda unidad_alumno_idioma nueva inicia en la primera unidad que entregue MC-009 (mayor potencial de expansión entre transversales sin prerrequisitos) — no existe campo en el sistema para registrar un nivel autodeclarado.","criterio_completitud":{"produccion_inicial":"mínimo_requerido = techo(total_pedido × 0.8) — ej. 10 ejercicios → mínimo 8; 100 palabras → mínimo 80; 7 ejercicios → mínimo 6 (redondeo hacia arriba, nunca hacia abajo).","fase_correccion":"100% de lo señalado como error debe quedar corregido antes de avanzar — asimetría intencional frente al 80% de producción inicial (MC-001 étape 17 exige colecta→corrección→diagnóstico completos).","factor_minimo":0.8},"evidencia_multimedia":{"regla":"Fotos/audio de producción NUNCA viven en la base de datos relacional. Se suben una sola vez a Supabase Storage; Claude las analiza UNA sola vez (ahí se paga el costo de visión) y devuelve el resultado en texto; evidencia.url_storage guarda solo la referencia."},"agrupacion_de_turnos":{"origen":"Piloto FR-411 — costo de visión es por imagen (overhead fijo), no por contenido de la imagen.","regla":"Agrupar en un solo turno de presentación los niveles de ejercicio que NO dependan de corrección previa (ej. niveau 1 + niveau 2 juntos). Producción escrita libre puede presentarse aparte por su extensión. Transformation SIEMPRE va después de corrección — NUNCA se agrupa antes, así ahorre fotos: agrupar por étape en vez de por dependencia de corrección violaría el orden canónico de MC-001 (riesgo de practicar transformación sobre un error aún no corregido)."},"limitacion_v1_evidencia_oral":"MC-001 §15 admite producción oral en el niveau 3; v1 solo acepta texto e imágenes (tipo_contenido 'audio' existe en la BD pero no se procesa)."},"docente_aprender":{"usa":"MC-OPERACIONAL solo para las etapas 1-12 de MC-001 (explicación/práctica guiada). Las etapas 14/15/17 (evidencia esperada, corrección diferida) quedan DESACTIVADAS en este modo — no se evalúa, no se diagnostica, no se corrige vía el agente.","sin_evidencia":"Regla explícita del usuario: este modo NO requiere evidencia de ningún tipo. La validación del aprendizaje del grupo es responsabilidad exclusiva del docente, a su discreción (típicamente en físico, fuera del sistema).","nivel_previo":"El agente NUNCA pregunta nivel de conocimiento previo del grupo — misma regla que en modo estudiante.","estructura_de_progreso":{"unidad":"sesion_grupo (no alumno_idioma) — un docente puede tener VARIAS sesiones de grupo simultáneas (distintos grupos, mismo o distinto idioma, distinto nivel de avance cada una).","regla_de_exclusividad":"Un idioma en progreso por SESIÓN DE GRUPO hasta terminarlo — la exclusividad es por grupo, no por docente. Un docente puede enseñar el mismo idioma a dos grupos en paralelo sin conflicto."},"seguro_tiempo_minimo":{"duracion":"2 horas desde que se presenta una unidad nueva al grupo, antes de poder marcarla como vista/avanzar.","enforcement":"Backend valida `now() - iniciado_unidad_en >= 2h` en cada intento de avance, independientemente de si el frontend ya deshabilitó el botón — nunca confiar solo en el cliente.","auditoria":"Se registra avanzado_por (username del docente) y avanzado_en (timestamp real de confirmación), aunque la decisión sea a discreción — para trazabilidad, no para restringir la decisión."},"motor_reactivacion_variante":{"origen":"El modo no genera evidencia individual, así que la señal 'errores_en_unidades_dependientes' del motor_reactivacion base NO APLICA aquí — no existe diagnóstico individual que la alimente.","regla":"w_errores = 0 en este modo (la entrada no existe, no se sustituye por un valor artificial). Prioridad de reactivación de grupo se calcula solo con w_dependencia + w_tiempo (recalibrados para sumar 1 entre ambos) + el sorteo independiente de hasard. El sistema puede sugerir al docente qué repasar por dependencia/tiempo, nunca por errores."}},"docente_crear":{"usa":"LG-OPERACIONAL, no MC-OPERACIONAL — es generación/validación de arquitectura, no ejecución de lección.","pool_de_idiomas":{"estructura":"Tabla de solicitudes con estado (pendiente/en_proceso/completado/rechazada_ya_existe).","regla_de_exclusividad":"Solo puede existir UNA solicitud con estado 'en_proceso' a la vez — restricción real (aplicación o constraint de base de datos), no solo sugerencia de flujo, para no perder trazabilidad de arquitecturas a medias."},"validacion_paso_a_paso":{"diferencia_con_LG_OPERACIONAL_base":"LG-OPERACIONAL original solo exigía confirmación humana en las Étapes 4 (décision) y 6 (rédaction) de LG-100. En modo docente_crear, el usuario exigió validación explícita en las 6 étapes (inventaire, points_critiques, recherche, decision, numerotation, redaction) — NINGUNA avanza sin validación del docente.","estructura":"sesion_creacion_arquitectura lleva el paso actual (1-6); cada paso queda con validado_por y validado_en antes de que el agente pueda generar el siguiente — mismo patrón de auditoría que evidencia (nunca se sobrescribe, solo se acumula)."},"seguro_anti_aprobacion_sin_lectura":{"condicion_1_scroll":"Elemento centinela al final del contenido (IntersectionObserver) confirma que el docente vio el final real, no solo que la barra de scroll se ve completa.","condicion_2_tiempo_minimo":"Calculado a partir de la extensión del contenido presentado (ej. cantidad de palabras ÷ velocidad de lectura promedio) — NO un número fijo arbitrario igual para todo documento.","ambas_obligatorias":"El botón 'Validar este paso' permanece deshabilitado hasta cumplir AMBAS condiciones.","enforcement_backend":"El backend guarda su propio timestamp de 'cuándo se mostró el contenido' y lo compara contra 'cuándo llegó la validación' — si alguien intenta forzar una validación vía API directa sin pasar por la UI, se rechaza por tiempo insuficiente. Mismo principio de no confiar solo en el cliente que el seguro de 2h de docente_aprender."},"registro_de_auditoria_final":"El documento de arquitectura final (XX-000/XX-X00) lleva estampado validado_por (username del docente) y fecha_validacion como campos estructurados obligatorios.","estado_de_madurez":"Modo definido pero NO ejecutado ni probado — a diferencia de estudiante (probado con FR-411), queda pendiente de validación real por tiempo indefinido, según decisión explícita del usuario."}},"notas_de_implementacion_para_el_agente":["Este documento se carga siempre en el contexto del agente, sin importar el idioma activo.","Junto a este documento, cargar solo la tabla canónica XX-000 del idioma en curso (ligera, son datos tabulares, no prosa).","El orden de las 12 etapas y las reglas de evidencia deben imponerse vía lógica de backend (máquina de estados), no confiarse a la interpretación del LLM en cada turno.","LG-OPERACIONAL es un documento separado y solo se carga cuando el agente debe generar o validar arquitectura nueva (ej. un idioma sin arquitectura previa), no durante la ejecución normal de lecciones."]};
+const mcJson = {"documento":"MC-OPERACIONAL","version":"1.7.0","historial":[{"version":"1.0.0","cambio":"Versión inicial."},{"version":"1.1.0","cambio":"Tras la ejecución piloto FR-411: (a) regla de scope de corrección (el agente solo corrige el objetivo de la unidad activa, nunca dominios no enseñados); (b) regla de agrupación de evidencia por turno (agrupar niveles que no dependan de corrección previa, nunca reordenar étapes); (c) motor_reactivacion formalizado en consolidacion_continua; (d) puntaje_leccion añadido a evidencia_y_estado, con alcance acotado (ver nota_MC002_S17)."},{"version":"1.2.0","cambio":"Formalización de modos_operacion (estudiante, docente_aprender, docente_crear), a partir del diagrama de flujo de navegación de la app. docente_crear queda explícitamente marcado como no probado, pendiente por tiempo indefinido."},{"version":"1.3.0","cambio":"Preparación para la Edge Function: (a) CORRECCIÓN de un error introducido en v1.0.0: 'etapas_en_orden' mezclaba el ciclo de 12 étapes con los números de SECCIÓN 14/15/17 de MC-001 y omitía corrección y transformación — reemplazada por ciclo_12_etapas + precisiones_mc001 + plan_ejecucion; (b) reglas operativas v1 de secuenciación (accesibilidad, dominio agotado, bloqueo por falta de contenido, política de desempate PROPUESTA); (c) regla provisional de transición de estados; (d) parámetros numéricos del motor de reactivación y factor de completitud como datos, no como texto."},{"version":"1.4.0","cambio":"Contrastado con MC-001 v1.0.2 real: (a) numeración de étapes = la de MC-001 (8–19, igual a su número de sección), con 'posicion' 1–12 del ciclo; (b) corrección DIFERIDA: la étape 17 corrige juntas las producciones de las étapes 15 y 16 (MC-001 §17 fase 1), ya no después de cada nivel; (c) niveau 3 = production libre (categoría libre); (d) descripciones de los 3 niveaux de MC-001 §15. Se retira la marca 'a ratificar' sobre 14/15/17: confirmado."},{"version":"1.5.0","cambio":"Alineado con MC-001 v1.0.3: (a) la étape 18 (transformación) NO se corrige (decisión J. Good): sus errores se registran como evidencia, sin corrección ni reescritura; se mantiene la completitud del 80%; (b) se documenta la separación contenido fijo / contenido generado (MC-001 §7.2–§7.4)."},{"version":"1.6.0","cambio":"Tras la ejecución de EN-411 (decisión J. Good): los errores fuera del alcance se MUESTRAN al alumno al entrar a la étape 17, como observación (fragmento → forma correcta), sin evaluarse ni exigir reescritura. Siguen registrándose como evidencia. Pendiente: corrección diferida al dominio propietario (por diseñar) y reflejar el cambio en MC-001 §7.5 y MC-002 §16."},{"version":"1.7.0","cambio":"Alineado con MC-001 v1.0.4 y MC-002 v1.2.0 (decisión J. Good tras EN-411): cada error fuera del alcance lleva su propietario (identificador del grafo, tomado de las fronteras del livrable) y sigue uno de tres tratamientos: propietario ya estudiado → se corrige en la étape 17 de la lección en curso; no estudiado → observación y corrección diferida a la étape 17 de la primera lección del propietario; transversal o sin propietario → solo observación."}],"proposito":"Capa operativa derivada de la saga MC-00X (Método Chatito). Contiene solo las reglas que el agente de IA debe aplicar en tiempo de ejecución, sin la justificación narrativa ni el historial de decisiones que sí viven en los documentos MC originales del repositorio. Es agnóstica de idioma: se usa igual para FR, KO, EN o cualquier arquitectura futura.","fuente_canonica":"https://github.com/JhonGoodEld/Method-Chatito (carpeta Specification/MC)","principios_rectores":{"P7_progresion_por_profundidad":{"regla":"La profundidad de una unidad transformacional se gestiona vía MC-009, no vía intuición del agente en el momento."},"P8_declarativo_procedimental":{"regla":"El agente NUNCA decide qué existe en la lengua (eso vive en las tablas XX-X00 declarativas). El agente solo decide CÓMO enseñarlo, dentro de las reglas de esta capa."},"P9_ejecucion_interactiva":{"regla":"Un documento de lección describe; el agente ejecuta. Prohibido: (a) que el agente reescriba o reinterprete la definición declarativa durante la conversación, (b) que la conversación misma se convierta en la fuente de la definición.","evidencia_previa":"Nunca se descarta evidencia ya recolectada, aunque cambie el estado del alumno.","reactivacion":"Es un evento posterior y distinto, gobernado por MC-006, no por la ejecución de la lección en curso."},"P10_separacion_declaracion_secuenciamiento":{"regla":"El ID o número de un livrable (ej. KO-511, EN-411) NO determina su prioridad ni orden de enseñanza. El orden SIEMPRE se decide vía el grafo de MC-009, nunca por numeración ni por razonamiento libre del LLM.","error_historico_a_evitar":"No elegir una lección 'porque existe' o 'porque es autocontenida' — ese razonamiento viola este principio aunque parezca práctico."}},"leccion":{"fuente":"MC-001 — Structure Standard d'une Leçon v1.0.3.","regla_maestra":"No se avanza a la etapa N+1 sin haber completado y declarado la etapa N. El agente no puede saltar a producción/ejercicios antes de declarar el conocimiento completo.","ciclo_12_etapas":[{"n":8,"posicion":1,"nombre":"description","tipo":"presentacion"},{"n":9,"posicion":2,"nombre":"utilisation","tipo":"presentacion"},{"n":10,"posicion":3,"nombre":"structure","tipo":"presentacion"},{"n":11,"posicion":4,"nombre":"expressions_frequentes","tipo":"presentacion"},{"n":12,"posicion":5,"nombre":"erreurs_frequentes","tipo":"presentacion"},{"n":13,"posicion":6,"nombre":"exemples","tipo":"presentacion"},{"n":14,"posicion":7,"nombre":"notes_et_exceptions","tipo":"presentacion","incluye":"transformations_prevues (declarativo)"},{"n":15,"posicion":8,"nombre":"exercices_guides","tipo":"produccion","incluye":"formes_evidence_attendues (declarativo, obligatorio)","niveles":{"1":"Transformation — transformar frases dadas según una consigna precisa (aplicación directa de la regla)","2":"Phrases — construir frases propias a partir de elementos dados (contextualización guiada)","3":"Production libre — producir libremente, sin soporte dado (escrita, oral, o foto de producción manuscrita)"}},{"n":16,"posicion":9,"nombre":"production_ecrite","tipo":"produccion"},{"n":17,"posicion":10,"nombre":"correction_detaillee","tipo":"correccion"},{"n":18,"posicion":11,"nombre":"transformation","tipo":"produccion"},{"n":19,"posicion":12,"nombre":"vocabulaire","tipo":"presentacion"}],"precisiones_mc001":{"etape_14_transformations_prevues":"Declarativo: anticipa las transformaciones que se ejecutarán en la étape 18. No las ejecuta.","etape_15_formes_evidence_attendues":"Declarativo y OBLIGATORIO: la LECCIÓN (livrable) precisa, por nivel, el tipo exacto de producción exigida, antes de ejecutar. Si el livrable no lo declara, el agente lo señala y usa los ejemplos de MC-001 §15.","etape_17_correction_detaillee":{"fases_obligatorias_en_orden":["collecte_evidence","correction_differee","diagnostic"],"fuentes":"Las producciones de las étapes 15 y 16 (MC-001 §17, fase 1).","regla":"Ninguna fase empieza antes de que termine la anterior. La corrección es frase por frase con explicación gramatical; el diagnóstico clasifica cada error con la tipología de MC-002 §13."},"etape_18_sin_correccion":"MC-001 v1.0.3 §18: la transformación no se corrige. Sus errores se consignan como evidencia (MC-002) sin corrección ni exigencia de reescritura."},"plan_ejecucion":{"nota":"Orden de ENTREGA en turnos. Agrupa sin reordenar el ciclo. Producciones con correccion 'diferida' acumulan sus errores hasta el paso de corrección (étape 17).","etapa_correccion":17,"pasos":[{"paso":"presentacion","etapas":[8,9,10,11,12,13,14],"tipo":"presentacion","declara_antes_de_producir":["etape_14_transformations_prevues","etape_15_formes_evidence_attendues"]},{"paso":"exercices_n1_n2","etapas":[15],"tipo":"produccion","niveles":[1,2],"categoria":"guiada","correccion":"diferida"},{"paso":"exercices_n3","etapas":[15],"tipo":"produccion","niveles":[3],"categoria":"libre","correccion":"diferida"},{"paso":"production_ecrite","etapas":[16],"tipo":"produccion","niveles":[null],"categoria":"libre","correccion":"diferida"},{"paso":"correction","etapas":[17],"tipo":"correccion","fuentes":["exercices_n1_n2","exercices_n3","production_ecrite"]},{"paso":"transformation","etapas":[18],"tipo":"produccion","niveles":[null],"categoria":"guiada","correccion":"ninguna"},{"paso":"vocabulaire","etapas":[19],"tipo":"presentacion","cierra_unidad":true}]},"numeracion":"n = número de étape de MC-001, que coincide con su número de sección (8–19); posicion = lugar en el ciclo de 12 (MC-000 §10). Toda referencia 'étape N' en documentos, evidencia y registros usa n.","contenido_fijo_y_generado":{"fuente":"MC-001 v1.0.3 §7.2–§7.4","regla":"Lo que varía es la manera de enseñar, nunca lo que se enseña. Lo que se corrige es la evidencia del alumno, confrontada con el contenido fijo.","fijo":"Del livrable validado: regla, uso, formas, expresiones, errores frecuentes con causa, notas y excepciones, transformaciones previstas, niveles y formas de evidencia, criterio de producción escrita, lista de vocabulario, portée.","generado":"Por el agente en cada sesión: formulación de las explicaciones, al menos 5 ejemplos nuevos (étape 13), ítems de los ejercicios, tema de la producción escrita, corrección y diagnóstico de la evidencia real, frases transformadas.","prohibido":"Añadir, quitar o modificar reglas, excepciones, criterios o formas de evidencia; copiar los ejemplos de referencia del livrable."}},"evidencia_y_estado":{"fuente":"MC-002 — Modèle d'Apprentissage","estados_posibles":["non_acquis","en_cours","acquis","consolide"],"principio_evidencia_no_igual_estado":"El estado es una inferencia; la evidencia es el registro bruto que la sustenta. La evidencia NUNCA se borra ni se sobrescribe, aunque el estado cambie.","modelo_observacion":{"pasos":8,"regla":"Un cambio de estado requiere haber completado el modelo de observación de 8 pasos, no una sola respuesta correcta o incorrecta."},"no_regresion_automatica":"Una respuesta incorrecta puntual NO degrada automáticamente el estado del alumno; requiere el diagnóstico completo de la etapa 17.","formula_consolidacion":"Se descubre empíricamente por idioma/alumno — el agente no debe asumir un umbral fijo universal.","regla_de_scope_de_correccion":{"origen":"Piloto FR-411 (v1.1.0) — el alumno produjo estructuras de dominios no enseñados aún (ej. conjugación verbal en una lección de género nominal).","regla":"La étape 17 evalúa ÚNICAMENTE el objetivo declarado de la unidad activa. Los errores fuera del alcance se registran como evidencia (nunca se descartan, Principio 9) y nunca se corrigen antes de que su conocimiento se haya enseñado (Principio 7). Cada uno lleva su propietario: el identificador del grafo que le asigna la tabla de fronteras del livrable (lección, sous-domaine o dominio).","tratamientos":{"propietario_ya_estudiado":"Todas sus lecciones declaradas están en acquis o consolidé: se corrige en la étape 17 de la lección en curso, con el 100% exigido.","propietario_no_estudiado":"Se muestra como observación en la étape 17 (fragmento → forma correcta, sin evaluar ni reescribir) y queda pendiente: se corrige en la étape 17 de la primera lección del propietario (la lección misma, o una de su sous-domaine o dominio) que estudie el alumno, con el 100% exigido.","transversal_o_sin_propietario":"Propietario de un dominio de naturaleza transversal, o ausente/inexistente en el grafo: solo observación."},"almacenamiento":"Los pendientes diferidos viven en la tabla errores_diferidos y se borran cuando se corrigen (la corrección queda en evidencia)."},"puntaje_leccion":{"origen":"Piloto FR-411 (v1.1.0) — necesario como señal de entrada para consolidacion_continua.motor_reactivacion, NO como evaluación pedagógica.","nota_MC002_S17":"MC-002 §17 prohíbe explícitamente reducir la evaluación pedagógica a una nota aditiva de sus 6 dimensiones diagnósticas (exactitude, adéquation, maîtrise structurelle, autonomie, stabilité, flexibilité). Este puntaje NO es esa nota — es una métrica de alcance acotado, exclusiva para alimentar la priorización de reactivación de MC-006. La decisión pedagógica de MC-002 §18 sigue siendo cualitativa y nunca se sustituye por este número.","formula":"puntaje_leccion = (peso_produccion_espontanea × %acierto_produccion_libre) + (peso_produccion_guiada × %acierto_ejercicios_y_transformacion)","pesos_iniciales_a_calibrar":{"peso_produccion_espontanea":0.6,"peso_produccion_guiada":0.4,"justificacion":"MC-002 §26 (Principe de production authentique): la producción espontánea mide mejor la mobilización real que la sollicitée. Confirmado empíricamente en FR-411: 100% en producción libre vs. 25% en ejercicio guiado al primer intento — evidencias de naturaleza distinta, no equivalentes."},"regla_de_calculo_v1":"Se usa la última evidencia ANTERIOR a la corrección de cada paso (primer intento completo). Guiada: correctos / total_pedido (denominador del sistema, no del LLM). Libre: correctos / ocurrencias del objetivo. Si una categoría no tiene datos, se renormalizan los pesos."},"regla_transicion_estados_v1":{"estado":"Regla operativa PROVISIONAL mientras el modelo de 8 pasos no esté formalizado.","non_acquis_a_en_cours":"Al iniciar la unidad (MC-009 la selecciona).","en_cours_a_acquis":"Al completar el ciclo MC-001 con todos los umbrales superados (completitud 80% y corrección 100%).","a_consolide":"NO automático en v1: exige evidencia de reactivación fuera de la lección original (MC-002 §8.4, MC-006). Pendiente.","nunca":"Ninguna transición es regresiva de forma automática (MC-002 §29)."}},"transformacion":{"fuente":"MC-004 — Consolidation par Transformation","mecanismos":["controlee","guidee","autonome","inverse","chainage","croisee"],"unidad_transformacional":"Entidad formal mínima sobre la que se aplica un mecanismo de transformación; es el objeto que lleva el estado de MC-002."},"vocabulario":{"fuente":"MC-005 — Gestion du Vocabulaire","criterio_priorizacion":["frecuencia","utilidad","reutilizacion"],"distincion":"activo (el alumno debe producirlo) vs pasivo (el alumno debe reconocerlo)"},"consolidacion_continua":{"fuente":"MC-006 — Consolidation Continue","estrategias":["hasard","dependance","erreurs_frequentes","temporelle"],"nota":"Una 'ruleta' de repaso aleatorio es solo UNA implementación posible de la estrategia 'hasard', no la estrategia completa.","motor_reactivacion":{"origen":"Formalizado en v1.1.0, cierra 3 ítems del roadmap de MC-006 §30 (representación formal de prioridad, combinación de las 4 estrategias, cálculo del intervalo entre reactivaciones).","principio_no_negociable":"El cálculo de prioridad de reactivación NUNCA sobrescribe el campo 'estado' de una unidad directamente — viola MC-002 §29 y MC-006 §25.5 (régression artificielle). Solo dispara una reactivación real; el estado únicamente cambia cuando esa reactivación produce evidencia nueva, evaluada por el modelo de 8 pasos de MC-002.","hasard":{"tratamiento":"Sorteo INDEPENDIENTE de la fórmula ponderada, no una de las señales sumadas. Con probabilidad p_azar en cada sesión, se ignora la prioridad calculada y se reactiva una unidad al azar entre las ya consolidadas.","p_azar_inicial_a_calibrar":0.08,"justificacion":"Sumarlo a la fórmula le daría peso conceptual de 'evidencia de olvido' que no tiene — MC-006 §11 solo pide que exista, sin dominar la selección."},"formula_prioridad_reactivacion":{"entradas":{"errores_en_unidades_dependientes":"Conteo de diagnósticos en lecciones POSTERIORES que señalan esta unidad como causa del error (MC-002 §15).","profundidad_de_rama":"Cuántas unidades subsecuentes ya se enseñaron desde que esta unidad se consolidó (vía XX-GRAFO) — implementa MC-006 §12 (révision par dépendance).","dias_desde_ultima_evidencia":"Días desde la fila más reciente en evidencia para esta unidad — implementa MC-006 §14 (révision temporelle), como curva creciente, no lineal fija."},"formula":"prioridad = (w_errores × normalizar(errores_en_unidades_dependientes)) + (w_dependencia × normalizar(profundidad_de_rama)) + (w_tiempo × curva_creciente(dias_desde_ultima_evidencia))","pesos_iniciales_a_calibrar":{"w_errores":0.5,"w_dependencia":0.2,"w_tiempo":0.3,"justificacion":"Orden de prioridad según MC-006 §25.3 (los errores pueden aumentar prioridad, no pueden monopolizarla) y el principio de profundidad de MC-000 §8.7 — errores activos sobre conocimiento previo bloquean avance real, por eso pesan más que el simple paso del tiempo."},"disparo":"Si prioridad supera un umbral configurable, se genera una reactivación real (MC-006 §9: forma distinta a la lección original, nunca repetición mecánica — prohibido por §25.1).","parametros_normalizacion_iniciales_a_calibrar":{"tope_errores":5,"tope_profundidad":10,"tau_dias":14,"umbral_disparo":0.5,"definiciones":"normalizar(x) = min(x / tope, 1); curva_creciente(dias) = 1 - exp(-dias / tau_dias)."}},"candidatos_v1":"Unidades en estado acquis o consolide, excluyendo la recién completada. v1.1.0 decía 'consolidadas'; se amplía a acquis porque reactivar lo adquirido es el camino hacia consolidé (MC-006 §5). A ratificar.","momento_de_evaluacion_v1":"Al cierre de cada unidad, no en cada mensaje, para no interrumpir la lección en curso.","salida_v1":"Solo una SUGERENCIA de reactivación; la lección de reactivación (forma distinta, MC-006 §9) no está implementada en v1."}},"fonologia_y_escritura":{"fuente":"MC-008 — Prononciation et Systèmes d'Écriture","interlingua":"IPA se usa como sistema de representación intermedio entre cualquier lengua origen y destino.","puente_fonetico":["representation","comparaison","interpretation"],"implementacion_referencia":"hangulito (módulo Fonetizador) — no requiere deep learning, es un problema de reglas + tablas de mapeo"},"secuenciacion":{"fuente":"MC-009 — Moteur de Séquencement Curriculaire","regla_maestra":"El orden de enseñanza lo decide EXCLUSIVAMENTE el grafo de prerrequisitos declarado en la tabla canónica XX-000 del idioma activo. El agente nunca decide el orden por numeración, por 'lo que existe', ni por razonamiento libre.","fuente_de_datos_requerida":"tabla_canonica_XX-000 (ejemplo: KO-000 v9.0) — Type (sequentiel/transversal) + Prerequis por dominio","criterio_seleccion_desempate":"potentiel_d_expansion (nodo → cuántas ramas nuevas habilita)","mecanismo_detour":"Si una rama se interrumpe (ej. por dificultad detectada), se apila y se puede retomar después sin perder el progreso.","nodos_transversales":{"regla":"No compiten por turno de enseñanza secuencial. Se consumen incrementalmente en paralelo.","activacion_reforzada":"Solo se prioriza un nodo transversal fuera de su consumo incremental normal si MC-002 detecta dificultad persistente asociada a él."},"distincion_critica":"orden_de_construccion (documental, taxonómico, gobierna en qué secuencia se REDACTAN los documentos XX-X00) ≠ orden_de_enseñanza (este motor, gobierna en qué secuencia se ENSEÑAN los dominios al alumno). Nunca usar uno para decidir el otro.","regla_accesibilidad_v1":"Un nodo es accesible si todos sus prerrequisitos fueron ENSEÑADOS (MC-009 §8), no consolidados. En v1, 'enseñada' = unidad en estado acquis o consolide (ciclo MC-001 completado). Un prerrequisito que sea un dominio transversal se considera siempre satisfecho (MC-009 §21).","dominio_agotado_v1":"Un dominio secuencial está agotado cuando tiene al menos una lección declarada y todas sus lecciones declaradas fueron enseñadas. Un dominio sin lecciones declaradas NUNCA se considera agotado: bloquea en lugar de saltarse (Principio 7).","bloqueo_por_falta_de_contenido":"Si la siguiente lección de la rama activa está declarada pero no redactada, el motor se BLOQUEA (código 305) en lugar de abrir otra rama: saltar de rama por falta de contenido violaría la progresión por profundidad. El bloqueo se registra para que el autor sepa qué lección redactar.","orden_intra_dominio":"Dentro de un dominio: primer sous-domaine en el orden en que la arquitectura lo declara, y dentro de él el primer contenido declarado (MC-009 §21), salvo prerrequisitos explícitos de lección.","politica_desempate_declarada":{"estado":"PROPUESTA — pendiente de ratificación. MC-009 §9 exige que el criterio secundario sea declarado; MC-009 §26 lo deja sin definir.","criterios_en_orden":["contenido_disponible","orden_declaracion_arquitectura"],"descripcion":{"contenido_disponible":"Entre ramas de igual potencial, preferir aquella cuya siguiente lección ya está redactada.","orden_declaracion_arquitectura":"Si persiste el empate, el orden en que la arquitectura (XX-GRAFO) declara sus dominios."},"trazabilidad":"Cada uso del desempate queda en la justificación de la decisión (MC-009 §23)."},"no_implementado_v1":["Aceleración e interrupción pedagógica (MC-009 §17): la interfaz MC-002↔MC-009 no está definida (MC-009 §26).","Activación reforzada de nodos transversales por dificultad persistente (MC-009 §16): el umbral de 'difficulté persistante' no está definido (MC-002 §32)."]},"modos_operacion":{"origen":"Formalizado en v1.2.0, a partir del diagrama de flujo de navegación de la app (rol docente/estudiante) discutido antes de la piloto FR-411.","regla_general":"El modo no es un documento operativo aparte — es un parámetro que el backend pasa al prompt. Todo modo reutiliza MC-OPERACIONAL y/o LG-OPERACIONAL tal cual existen; nunca se duplica contenido de las 12 etapas de MC-001 por modo.","estudiante":{"usa":"MC-OPERACIONAL completo (leccion + evidencia_y_estado + consolidacion_continua).","limite_idiomas":{"max_idiomas_en_curso":3,"max_solicitudes_idioma_nuevo_pendientes":1,"regla_anti_desperdicio":"Antes de registrar una solicitud como 'idioma nuevo', el backend verifica primero si el idioma YA EXISTE en el catálogo (aunque esté con activo=false, precargado). Si existe, se asigna directo como uno de los 3 — la solicitud NUNCA se consume por un idioma que ya estaba disponible."},"nivel_previo":"El agente NUNCA pregunta nivel de conocimiento previo. Toda unidad_alumno_idioma nueva inicia en la primera unidad que entregue MC-009 (mayor potencial de expansión entre transversales sin prerrequisitos) — no existe campo en el sistema para registrar un nivel autodeclarado.","criterio_completitud":{"produccion_inicial":"mínimo_requerido = techo(total_pedido × 0.8) — ej. 10 ejercicios → mínimo 8; 100 palabras → mínimo 80; 7 ejercicios → mínimo 6 (redondeo hacia arriba, nunca hacia abajo).","fase_correccion":"100% de lo señalado como error debe quedar corregido antes de avanzar — asimetría intencional frente al 80% de producción inicial (MC-001 étape 17 exige colecta→corrección→diagnóstico completos).","factor_minimo":0.8},"evidencia_multimedia":{"regla":"Fotos/audio de producción NUNCA viven en la base de datos relacional. Se suben una sola vez a Supabase Storage; Claude las analiza UNA sola vez (ahí se paga el costo de visión) y devuelve el resultado en texto; evidencia.url_storage guarda solo la referencia."},"agrupacion_de_turnos":{"origen":"Piloto FR-411 — costo de visión es por imagen (overhead fijo), no por contenido de la imagen.","regla":"Agrupar en un solo turno de presentación los niveles de ejercicio que NO dependan de corrección previa (ej. niveau 1 + niveau 2 juntos). Producción escrita libre puede presentarse aparte por su extensión. Transformation SIEMPRE va después de corrección — NUNCA se agrupa antes, así ahorre fotos: agrupar por étape en vez de por dependencia de corrección violaría el orden canónico de MC-001 (riesgo de practicar transformación sobre un error aún no corregido)."},"limitacion_v1_evidencia_oral":"MC-001 §15 admite producción oral en el niveau 3; v1 solo acepta texto e imágenes (tipo_contenido 'audio' existe en la BD pero no se procesa)."},"docente_aprender":{"usa":"MC-OPERACIONAL solo para las etapas 1-12 de MC-001 (explicación/práctica guiada). Las etapas 14/15/17 (evidencia esperada, corrección diferida) quedan DESACTIVADAS en este modo — no se evalúa, no se diagnostica, no se corrige vía el agente.","sin_evidencia":"Regla explícita del usuario: este modo NO requiere evidencia de ningún tipo. La validación del aprendizaje del grupo es responsabilidad exclusiva del docente, a su discreción (típicamente en físico, fuera del sistema).","nivel_previo":"El agente NUNCA pregunta nivel de conocimiento previo del grupo — misma regla que en modo estudiante.","estructura_de_progreso":{"unidad":"sesion_grupo (no alumno_idioma) — un docente puede tener VARIAS sesiones de grupo simultáneas (distintos grupos, mismo o distinto idioma, distinto nivel de avance cada una).","regla_de_exclusividad":"Un idioma en progreso por SESIÓN DE GRUPO hasta terminarlo — la exclusividad es por grupo, no por docente. Un docente puede enseñar el mismo idioma a dos grupos en paralelo sin conflicto."},"seguro_tiempo_minimo":{"duracion":"2 horas desde que se presenta una unidad nueva al grupo, antes de poder marcarla como vista/avanzar.","enforcement":"Backend valida `now() - iniciado_unidad_en >= 2h` en cada intento de avance, independientemente de si el frontend ya deshabilitó el botón — nunca confiar solo en el cliente.","auditoria":"Se registra avanzado_por (username del docente) y avanzado_en (timestamp real de confirmación), aunque la decisión sea a discreción — para trazabilidad, no para restringir la decisión."},"motor_reactivacion_variante":{"origen":"El modo no genera evidencia individual, así que la señal 'errores_en_unidades_dependientes' del motor_reactivacion base NO APLICA aquí — no existe diagnóstico individual que la alimente.","regla":"w_errores = 0 en este modo (la entrada no existe, no se sustituye por un valor artificial). Prioridad de reactivación de grupo se calcula solo con w_dependencia + w_tiempo (recalibrados para sumar 1 entre ambos) + el sorteo independiente de hasard. El sistema puede sugerir al docente qué repasar por dependencia/tiempo, nunca por errores."}},"docente_crear":{"usa":"LG-OPERACIONAL, no MC-OPERACIONAL — es generación/validación de arquitectura, no ejecución de lección.","pool_de_idiomas":{"estructura":"Tabla de solicitudes con estado (pendiente/en_proceso/completado/rechazada_ya_existe).","regla_de_exclusividad":"Solo puede existir UNA solicitud con estado 'en_proceso' a la vez — restricción real (aplicación o constraint de base de datos), no solo sugerencia de flujo, para no perder trazabilidad de arquitecturas a medias."},"validacion_paso_a_paso":{"diferencia_con_LG_OPERACIONAL_base":"LG-OPERACIONAL original solo exigía confirmación humana en las Étapes 4 (décision) y 6 (rédaction) de LG-100. En modo docente_crear, el usuario exigió validación explícita en las 6 étapes (inventaire, points_critiques, recherche, decision, numerotation, redaction) — NINGUNA avanza sin validación del docente.","estructura":"sesion_creacion_arquitectura lleva el paso actual (1-6); cada paso queda con validado_por y validado_en antes de que el agente pueda generar el siguiente — mismo patrón de auditoría que evidencia (nunca se sobrescribe, solo se acumula)."},"seguro_anti_aprobacion_sin_lectura":{"condicion_1_scroll":"Elemento centinela al final del contenido (IntersectionObserver) confirma que el docente vio el final real, no solo que la barra de scroll se ve completa.","condicion_2_tiempo_minimo":"Calculado a partir de la extensión del contenido presentado (ej. cantidad de palabras ÷ velocidad de lectura promedio) — NO un número fijo arbitrario igual para todo documento.","ambas_obligatorias":"El botón 'Validar este paso' permanece deshabilitado hasta cumplir AMBAS condiciones.","enforcement_backend":"El backend guarda su propio timestamp de 'cuándo se mostró el contenido' y lo compara contra 'cuándo llegó la validación' — si alguien intenta forzar una validación vía API directa sin pasar por la UI, se rechaza por tiempo insuficiente. Mismo principio de no confiar solo en el cliente que el seguro de 2h de docente_aprender."},"registro_de_auditoria_final":"El documento de arquitectura final (XX-000/XX-X00) lleva estampado validado_por (username del docente) y fecha_validacion como campos estructurados obligatorios.","estado_de_madurez":"Modo definido pero NO ejecutado ni probado — a diferencia de estudiante (probado con FR-411), queda pendiente de validación real por tiempo indefinido, según decisión explícita del usuario."}},"notas_de_implementacion_para_el_agente":["Este documento se carga siempre en el contexto del agente, sin importar el idioma activo.","Junto a este documento, cargar solo la tabla canónica XX-000 del idioma en curso (ligera, son datos tabulares, no prosa).","El orden de las 12 etapas y las reglas de evidencia deben imponerse vía lógica de backend (máquina de estados), no confiarse a la interpretación del LLM en cada turno.","LG-OPERACIONAL es un documento separado y solo se carga cuando el agente debe generar o validar arquitectura nueva (ej. un idioma sin arquitectura previa), no durante la ejecución normal de lecciones."]};
 const enGrafo = {"documento":"EN-GRAFO","version":"1.0.0","idioma":"EN","arquitectura_fuente":"EN-000 v1.0.0 (arquitectura completa, terminada)","proposito":"Extracto de datos puro para el motor de secuenciación MC-009. Contiene solo Type + Prérequis + sous-domaines por dominio — sin Genèse, sin justificación, sin tabla de Frontières. Se carga junto a MC-OPERACIONAL.json cuando el idioma activo del alumno es inglés.","estado_validacion":"RESUELTO vía procedimiento LG-100 (Points critiques → Recherche → Décision) el mismo día de generación de este archivo. Ver 'justificacion' en EN-700/EN-800. Pendiente únicamente de ratificación formal por el usuario en el documento EN-000 original — no se ha modificado EN-000 todavía.","dominios":[{"id":"EN-100","nombre":"Phonologie","nivel":"Ressource","nature":"transversal","prerequis":[],"sous_domaines":["EN-110","EN-120","EN-130","EN-140","EN-150","EN-160","EN-170","EN-180","EN-190"]},{"id":"EN-200","nombre":"Orthographe","nivel":"Ressource","nature":"transversal","prerequis":[],"sous_domaines":["EN-210","EN-220","EN-230","EN-240","EN-250"]},{"id":"EN-300","nombre":"Lexique","nivel":"Ressource","nature":"transversal","prerequis":[],"sous_domaines":["EN-310","EN-330","EN-340","EN-350","EN-360","EN-370","EN-380"]},{"id":"EN-400","nombre":"Système nominal","nivel":"Système","nature":"sequentiel","prerequis":["EN-300"],"sous_domaines":["EN-410","EN-420","EN-430","EN-440","EN-450"],"livrables_conocidos":[]},{"id":"EN-500","nombre":"Système verbal","nivel":"Système","nature":"sequentiel","prerequis":["EN-300","EN-400"],"nota_tipologica":"Depende de EN-400 por concordancia sujeto-verbo real en inglés (divergencia legítima confirmada frente a KO-500, que NO depende de KO-400 por ausencia de esa concordancia en coreano)","sous_domaines":["EN-510","EN-520","EN-530","EN-540","EN-550","EN-560"],"livrables_conocidos":["EN-411 (piloto, nota: EN-411 es livrable de EN-400, no de EN-500 — se deja aquí solo como referencia de ejemplo de livrable ya generado en la arquitectura)"]},{"id":"EN-600","nombre":"Syntaxe","nivel":"Système","nature":"sequentiel","prerequis":["EN-400","EN-500"],"sous_domaines":["EN-610","EN-620","EN-630","EN-640","EN-650","EN-660"]},{"id":"EN-700","nombre":"Discours","nivel":"Communication","nature":"sequentiel","prerequis":["EN-600"],"justificacion":"Los mecanismos de cohesión discursiva (référence, ellipse, conjonction) operan sobre estructuras gramaticales ya formadas (référence nominale de EN-440, combinaison de propositions de EN-640), no las crean. Fuente: Halliday & Hasan — la cohesión usa recursos gramaticales existentes de la lengua, no constituye un sistema aparte. Resuelto vía LG-100 (Points critiques→Recherche→Décision), pendiente de ratificación formal en EN-000.","sous_domaines":["EN-710","EN-720","EN-730","EN-740","EN-750","EN-760"]},{"id":"EN-800","nombre":"Pragmatique","nivel":"Communication","nature":"sequentiel","prerequis":["EN-700"],"justificacion":"Las estrategias de indirección/cortesía (EN-830) y los géneros discursivos que EN-800 hereda de EN-760 presuponen coherencia discursiva ya lograda por el alumno. Resuelto vía LG-100, pendiente de ratificación formal en EN-000.","sous_domaines":["EN-810","EN-820","EN-830","EN-840"]}],"livrables_declarativos_ya_redactados":[{"id":"EN-411","dominio":"EN-400","nombre":"Le pluriel régulier et irrégulier","tipo":"piloto"}],"potencial_expansion_calculado":{"nota":"Cuenta de cuántos dominios dependen, directa o indirectamente, de cada uno — ya incluye la resolución de EN-700/EN-800.","EN-300":5,"EN-400":4,"EN-500":3,"EN-600":2,"EN-700":1,"EN-800":0},"notas_de_implementacion":["Este archivo se usa junto a MC-OPERACIONAL.json solo cuando idioma_activo = EN.","No confundir con EN-000: este documento es datos puros para MC-009, EN-000 sigue siendo la fuente canónica con prosa, Genèse y Frontières.","Grafo completo y sin cabos sueltos: EN-100 a EN-800 con Type+Prérequis resueltos. Pendiente únicamente trasladar la resolución de EN-700/EN-800 al documento EN-000 original para que ambos queden sincronizados."]};
 const frGrafo = {"documento":"FR-GRAFO","version":"1.0.0","idioma":"FR","arquitectura_fuente":"FR-000 v1.1.0 (alineada a plantilla madura, dependencia FR-500 auditada y confirmada)","proposito":"Extracto de datos puro para el motor de secuenciación MC-009. Se carga junto a MC-OPERACIONAL.json cuando el idioma activo del alumno es francés.","estado_validacion":"Tabla de dependencias (Type+Prérequis) CERRADA y confirmada por auditoría explícita. Lista de sous_domaines PARCIAL — solo incluye los ya documentados en la tabla de Frontières de FR-000; el resto no se ha declarado formalmente todavía.","dominios":[{"id":"FR-100","nombre":"Phonologie","nivel":"Ressource","nature":"transversal","prerequis":[],"sous_domaines":[],"lista_sous_domaines_incompleta":true},{"id":"FR-200","nombre":"Orthographe","nivel":"Ressource","nature":"transversal","prerequis":[],"sous_domaines":["FR-280"],"lista_sous_domaines_incompleta":true},{"id":"FR-300","nombre":"Lexique","nivel":"Ressource","nature":"transversal","prerequis":[],"sous_domaines":["FR-310","FR-340","FR-380"],"lista_sous_domaines_incompleta":true},{"id":"FR-400","nombre":"Système nominal","nivel":"Système","nature":"sequentiel","prerequis":["FR-300"],"sous_domaines":["FR-410","FR-420","FR-440","FR-460","FR-480"],"lista_sous_domaines_incompleta":true,"identifiants_retires":[{"id":"FR-470","absorbe_par":"FR-420"}]},{"id":"FR-500","nombre":"Système verbal","nivel":"Système","nature":"sequentiel","prerequis":["FR-300","FR-400"],"nota_tipologica":"Dependencia CONFIRMADA por auditoría (FR-000 v1.1.0): el acuerdo sujeto-verbo francés consume morfología nominal (FR-410) y mecanismo pronominal (FR-440) — no es un arrastre sin examinar. Divergencia frente a KO-500 (independiente), paralela a EN-500.","sous_domaines":["FR-530","FR-531","FR-550","FR-560"],"lista_sous_domaines_incompleta":true},{"id":"FR-600","nombre":"Syntaxe","nivel":"Système","nature":"sequentiel","prerequis":["FR-400","FR-500"],"sous_domaines":["FR-660"],"lista_sous_domaines_incompleta":true},{"id":"FR-700","nombre":"Discours","nivel":"Communication","nature":"sequentiel","prerequis":["FR-600"],"sous_domaines":["FR-720","FR-740"],"lista_sous_domaines_incompleta":true},{"id":"FR-800","nombre":"Pragmatique et communication","nivel":"Communication","nature":"sequentiel","prerequis":["FR-700"],"sous_domaines":["FR-810"],"lista_sous_domaines_incompleta":true}],"livrables_declarativos_ya_redactados":[{"id":"FR-531","dominio":"FR-500","sous_domaine":"FR-531 (Indicatif)","tipo":"con evidencia real registrada"}],"potencial_expansion_calculado":{"nota":"Cuenta de dominios que dependen, directa o indirectamente, de cada uno.","FR-300":5,"FR-400":4,"FR-500":3,"FR-600":2,"FR-700":1,"FR-800":0},"notas_de_implementacion":["Este archivo se usa junto a MC-OPERACIONAL.json solo cuando idioma_activo = FR.","Tabla de dependencias lista para producción. La lista de sous_domaines es parcial — completar sin bloquear el uso del grafo para secuenciación de dominios (MC-009 solo necesita el nivel de dominio XX-X00, no el de sous-domaine, para su algoritmo principal)."]};
 const koGrafo = {"documento":"KO-GRAFO","version":"1.0.0","idioma":"KO","arquitectura_fuente":"KO-000 v0.1.1 (tabla canónica sección 9.0 ya formalizada por el usuario, la más madura de las tres)","proposito":"Extracto de datos puro para el motor de secuenciación MC-009. Se carga junto a MC-OPERACIONAL.json cuando el idioma activo del alumno es coreano.","estado_validacion":"CERRADO. Tomado directamente de la tabla canónica 9.0 de KO-000, ya marcada ahí como fuente única de verdad — no requiere auditoría adicional.","dominios":[{"id":"KO-100","nombre":"Phonologie","nivel":"Ressource","nature":"transversal","prerequis":[],"sous_domaines":["KO-110","KO-120","KO-130","KO-140","KO-150","KO-160","KO-170","KO-180","KO-190"]},{"id":"KO-200","nombre":"Système d'Écriture","nivel":"Ressource","nature":"transversal","prerequis":[],"sous_domaines":["KO-210","KO-220","KO-230","KO-240","KO-250","KO-260","KO-270","KO-280","KO-290"]},{"id":"KO-300","nombre":"Lexique","nivel":"Ressource","nature":"transversal","prerequis":[],"sous_domaines":["KO-310","KO-320","KO-330","KO-340","KO-350","KO-360","KO-370","KO-380"]},{"id":"KO-400","nombre":"Système morphologique et nominal","nivel":"Système","nature":"sequentiel","prerequis":["KO-300"],"nota_estructural":"Hermano de KO-500, no cadena — ambos dependen únicamente de KO-300. MC-009 calculará el potencial de expansión de cada uno para elegir la rama activa; el otro se vuelve détour obligatorio antes de que KO-600 sea accesible (KO-600 exige ambos).","sous_domaines":["KO-410","KO-420","KO-430","KO-440","KO-460"],"identifiants_retires":[{"id":"KO-450","absorbe_par":"KO-420"},{"id":"KO-470","absorbe_par":"KO-420"},{"id":"KO-480","absorbe_por":"table Frontières de KO-400"}]},{"id":"KO-500","nombre":"Système verbal","nivel":"Système","nature":"sequentiel","prerequis":["KO-300"],"nota_tipologica":"Independiente de KO-400 (ver nota en KO-400) — el verbo coreano no marca acuerdo de género/número con el sujeto, a diferencia de FR-500/EN-500.","sous_domaines":["KO-510","KO-520","KO-530","KO-540","KO-550","KO-560","KO-570","KO-580","KO-590"]},{"id":"KO-600","nombre":"Syntaxe","nivel":"Système","nature":"sequentiel","prerequis":["KO-400","KO-500"],"sous_domaines":["KO-610","KO-620","KO-630","KO-640"],"identifiants_retires":[{"id":"KO-680","absorbe_por":"table Frontières de KO-600"}]},{"id":"KO-700","nombre":"Discours","nivel":"Communication","nature":"sequentiel","prerequis":["KO-600"],"sous_domaines":["KO-710","KO-720","KO-730","KO-740","KO-750","KO-760","KO-770"],"identifiants_retires":[{"id":"KO-780","absorbe_por":"table Frontières de KO-700"}]},{"id":"KO-800","nombre":"Pragmatique et communication","nivel":"Communication","nature":"sequentiel","prerequis":["KO-700"],"sous_domaines":["KO-810","KO-820","KO-830","KO-840","KO-850","KO-860","KO-870"]}],"livrables_declarativos_ya_redactados":[{"id":"KO-511","dominio":"KO-500","tipo":"con evidencia real registrada — caso donde se detectó y corrigió un error de secuenciación previo"}],"potencial_expansion_calculado":{"nota":"Cuenta de dominios que dependen, directa o indirectamente, de cada uno. KO-400 y KO-500 quedan empatados — MC-009 decide la rama activa por su propio algoritmo (secciones 9-10), no por este número.","KO-300":5,"KO-400":3,"KO-500":3,"KO-600":2,"KO-700":1,"KO-800":0},"notas_de_implementacion":["Este archivo se usa junto a MC-OPERACIONAL.json solo cuando idioma_activo = KO.","Es el grafo más confiable de los tres — viene de una tabla ya marcada como canónica por el propio usuario, sin necesidad de auditoría adicional de este lado.","El backend debe implementar la lógica de 'détour' (ver mecanismo_detour en MC-OPERACIONAL) específicamente para el par KO-400/KO-500 — es el único caso de hermanos reales entre los tres idiomas."]};
@@ -459,10 +505,10 @@ export const GRAFOS: Readonly<Record<string, Grafo>> = {
 export const INFRA = {
   /** Mensajes por minuto por usuario. Una lección no requiere más. */
   LIMITE_USUARIO_POR_MINUTO: 6,
-  /** Llamadas al LLM por día para TODA la app. OpenRouter gratis sin créditos = 50/día. */
-  LIMITE_GLOBAL_LLM_DIARIO: 45,
-  /** Candado anti doble-envío por usuario (segundos). Debe superar TIMEOUT_LLM_MS. */
-  CANDADO_TTL_SEGUNDOS: 90,
+  /** Llamadas al LLM por día para TODA la app, si no se define el secret LLM_LIMITE_DIARIO. */
+  LIMITE_GLOBAL_LLM_DIARIO_POR_DEFECTO: 200,
+  /** Candado anti doble-envío por usuario (segundos). Debe superar 2 × TIMEOUT_LLM_MS (llamada + reparación). */
+  CANDADO_TTL_SEGUNDOS: 150,
   CACHE_LIVRABLE_TTL_SEGUNDOS: 3600,
   MAX_IMAGENES: 3,
   /** Bytes decodificados por imagen: el frontend DEBE reducirlas antes de enviar. */
@@ -477,11 +523,25 @@ export const INFRA = {
   SEVERIDAD_MINIMA_REGISTRO: "warning" as const,
   IDIOMA_INTERFAZ: "español",
   MAX_EVIDENCIAS_MOTOR: 500,
-  MAX_TOKENS_PRESENTACION: 3000,
+  /** La presentación (étapes 8–14, una sección por étape) es la respuesta más larga. */
+  MAX_TOKENS_PRESENTACION: 6000,
+  /** Pausa antes de repetir una petición tras un fallo pasajero del proveedor. */
+  PAUSA_REINTENTO_MS: 1500,
+  /** Pausa más larga cuando el proveedor avisa saturación (503 "high demand" o 429) — cambio 12.
+   *  Peor caso de una petición: 60 s + 5 s + 60 s = 125 s < 150 s (límite de Supabase y del candado). */
+  PAUSA_SATURACION_MS: 5000,
+  /** Tope al duplicar el límite tras una respuesta cortada (cambio 3). */
+  MAX_TOKENS_TOPE: 12000,
   MAX_TOKENS_EVALUACION: 2500,
   BUCKET_EVIDENCIAS: "evidencias",
   MODELO_CLAUDE_POR_DEFECTO: "claude-sonnet-5-5",
-  MODELO_OPENROUTER_POR_DEFECTO: "openrouter/free",
+  /** Pruebas del desarrollador (no apto para menores ni datos reales: ver llm_gemini.ts). */
+  MODELO_GEMINI_POR_DEFECTO: "gemini-3.8-flash",
+  /** El mínimo que admite gemini-3.8-flash (no tiene MINIMAL). */
+  NIVEL_RAZONAMIENTO_GEMINI: "LOW" as const,
+  /** Respaldo para el segundo intento tras saturación o tiempo agotado (cambio 11).
+   *  Estable, gratis, lee imágenes, admite esquema JSON y el nivel LOW. Se cambia con LLM_MODEL_RESPALDO. */
+  MODELO_GEMINI_RESPALDO: "gemini-3.5-flash-lite",
 } as const;
 
 // ---------- Secrets (lectura perezosa) ----------
@@ -498,6 +558,17 @@ export function secretObligatorio(nombre: string): string {
 
 export function secretOpcional(nombre: string): string | undefined {
   return leer(nombre);
+}
+
+/** Tope diario global de llamadas al LLM: secret LLM_LIMITE_DIARIO (entero 1–100000) o el valor por defecto. */
+export function limiteGlobalDiario(): number {
+  const crudo = leer("LLM_LIMITE_DIARIO");
+  if (crudo === undefined) return INFRA.LIMITE_GLOBAL_LLM_DIARIO_POR_DEFECTO;
+  const n = Number(crudo);
+  if (!Number.isInteger(n) || n < 1 || n > 100_000) {
+    throw new ErrorApp(598, `LLM_LIMITE_DIARIO inválido: "${crudo}" (debe ser un entero entre 1 y 100000)`);
+  }
+  return n;
 }
 
 // ---------- Validación de los datos canónicos ----------
@@ -664,6 +735,8 @@ export type CambiosSesion = Partial<Pick<Sesion, "unidad_id" | "etapa_actual" | 
 export interface Repositorio {
   obtenerAlumnoIdioma(id: string): Promise<AlumnoIdioma | null>;
   obtenerRolPerfil(usuarioId: string): Promise<string | null>;
+  /** true si el usuario aceptó el Aviso de Privacidad y los Términos (migración 004). */
+  consentimientoRegistrado(usuarioId: string): Promise<boolean>;
   obtenerSesion(alumnoIdiomaId: string): Promise<Sesion | null>;
   crearSesion(d: { alumno_idioma_id: string; unidad_id: string; etapa_actual: number; requisitos_etapa: Requisitos }): Promise<Sesion>;
   /** Compare-and-set sobre actualizado_en: si otra petición cambió la sesión → 105. */
@@ -682,6 +755,10 @@ export interface Repositorio {
   obtenerLecciones(idiomaCodigo: string): Promise<LeccionDeclarada[]>;
   obtenerContenidoLivrable(unidadId: string): Promise<string | null>;
   subirArchivo(ruta: string, bytes: Uint8Array, mediaType: string): Promise<void>;
+  /** Corrección diferida (migración 005). Insertar ignora duplicados. */
+  guardarErroresDiferidos(filas: ErrorDiferidoNuevo[]): Promise<void>;
+  obtenerErroresDiferidos(alumnoIdiomaId: string): Promise<ErrorDiferido[]>;
+  borrarErroresDiferidos(ids: string[]): Promise<void>;
   ping(): Promise<boolean>;
 }
 
@@ -741,6 +818,16 @@ export class RepositorioSupabase implements Repositorio {
     const { data, error } = await this.db.from("perfiles").select("rol").eq("id", usuarioId).maybeSingle();
     if (error) fallo(error, "leer perfil", false);
     return data?.rol ?? null;
+  }
+
+  async consentimientoRegistrado(usuarioId: string): Promise<boolean> {
+    const { data, error } = await this.db
+      .from("perfiles")
+      .select("declaracion_edad, terminos_aceptados_en")
+      .eq("id", usuarioId)
+      .maybeSingle();
+    if (error) fallo(error, "leer consentimiento", false);
+    return !!data?.declaracion_edad && !!data?.terminos_aceptados_en;
   }
 
   async obtenerSesion(alumnoIdiomaId: string): Promise<Sesion | null> {
@@ -816,6 +903,31 @@ export class RepositorioSupabase implements Repositorio {
       { onConflict: "alumno_idioma_id,unidad_id" },
     );
     if (error) fallo(error, "marcar acquis", true);
+  }
+
+  async guardarErroresDiferidos(filas: ErrorDiferidoNuevo[]): Promise<void> {
+    if (filas.length === 0) return;
+    const { error } = await this.db.from("errores_diferidos").upsert(filas, {
+      onConflict: "alumno_idioma_id,unidad_origen,fragmento,correccion",
+      ignoreDuplicates: true,
+    });
+    if (error) fallo(error, "guardar errores diferidos", true);
+  }
+
+  async obtenerErroresDiferidos(alumnoIdiomaId: string): Promise<ErrorDiferido[]> {
+    const { data, error } = await this.db
+      .from("errores_diferidos")
+      .select("*")
+      .eq("alumno_idioma_id", alumnoIdiomaId)
+      .order("creado_en", { ascending: true });
+    if (error) fallo(error, "leer errores diferidos", false);
+    return (data ?? []) as ErrorDiferido[];
+  }
+
+  async borrarErroresDiferidos(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const { error } = await this.db.from("errores_diferidos").delete().in("id", ids);
+    if (error) fallo(error, "borrar errores diferidos", true);
   }
 
   async insertarEvidencias(filas: FilaEvidenciaNueva[]): Promise<void> {
@@ -947,6 +1059,61 @@ export function evaluarProduccion(niveles: EntregaNivel[], factor: number): Resu
   return { cumple: detalle.every((d) => d.cumple), detalle };
 }
 
+/**
+ * Cambio 15: palabras contadas por el código, no por la IA (que se equivocaba ±10).
+ * Ignora lo que va entre corchetes (marcas como «[ilegible]») y los signos sueltos.
+ */
+export function contarPalabras(texto: string): number {
+  return texto
+    .replace(/\[[^\]]*\]/g, " ")
+    .split(/\s+/)
+    .filter((t) => /[\p{L}\p{N}]/u.test(t))
+    .length;
+}
+
+/**
+ * Cambio 15: un paso de un solo nivel medido en palabras es UN texto (étape 16):
+ * cada entrega es el texto completo y reemplaza a la anterior.
+ */
+export function esTextoUnico(niveles: Array<{ unidad_medida: string }> | undefined): boolean {
+  return niveles?.length === 1 && niveles[0].unidad_medida === "palabras";
+}
+
+/**
+ * Cambio 18: un «error» cuya corrección es idéntica al fragmento no es un error.
+ * Solo se ignoran los espacios y la puntuación de los extremos; las mayúsculas
+ * SÍ cuentan («i mean» → «I mean» es un error real en inglés).
+ */
+export function esErrorReal(e: { fragmento: string; correccion: string }): boolean {
+  const limpiar = (t: string) =>
+    t.normalize("NFC").replace(/\s+/g, " ").trim().replace(/^[\p{P}\s]+|[\p{P}\s]+$/gu, "");
+  return limpiar(e.fragmento) !== limpiar(e.correccion);
+}
+
+/** Cambio 17: la lista de pendientes la arma el código, completa y numerada. */
+export function listaPendientes(errores: Array<{ indice: number; fragmento: string; tema?: string }>): string {
+  const item = (e: { indice: number; fragmento: string; tema?: string }) =>
+    `[${e.indice}] «${e.fragmento}»${e.tema ? ` (tema ${e.tema})` : ""}`;
+  return `Pendientes (${errores.length}): ${errores.map(item).join(" · ")}. Reescribe cada uno.`;
+}
+
+/**
+ * Cambio 19: errores fuera del alcance, mostrados sin evaluar ni exigir reescritura.
+ * Sin duplicados; como mucho `max` para no saturar al alumno.
+ */
+export function notaObservaciones(obs: Array<{ fragmento: string; correccion: string; destino?: string }>, max = 10): string {
+  const vistos = new Set<string>();
+  const unicas = obs.filter((o) => {
+    const clave = `${o.fragmento}→${o.correccion}`;
+    return vistos.has(clave) ? false : (vistos.add(clave), true);
+  });
+  if (unicas.length === 0) return "";
+  const resto = unicas.length - max;
+  return `Además observé errores de otros temas (no se evalúan ni hay que reescribirlos): ` +
+    unicas.slice(0, max).map((o) => `«${o.fragmento}» → «${o.correccion}»${o.destino ? ` (se corregirá en ${o.destino})` : ""}`).join(" · ") +
+    (resto > 0 ? ` (+${resto} más)` : "") + ".";
+}
+
 /** 100% de lo señalado. Índices corregidos que no fueron señalados se ignoran. */
 export function evaluarCorreccion(
   indicesSenalados: number[],
@@ -987,14 +1154,20 @@ export interface PeticionLLM {
   imagenes: ImagenEntrada[];
   maxTokens: number;
   temperatura: number;
+  /** Esquema JSON que el proveedor debe imponer a la respuesta, si lo admite (mejora A). */
+  formato?: { nombre: string; esquema: Record<string, unknown> };
+  /** Turnos posteriores al primer mensaje del usuario (reparación de formato, mejora B). */
+  historial?: Array<{ rol: "assistant" | "user"; texto: string }>;
 }
 
 export interface RespuestaLLM {
   texto: string;
+  /** true si el modelo se detuvo por el límite de tokens (respuesta incompleta). */
+  cortada: boolean;
   proveedor: string;
-  /** Modelo que REALMENTE respondió (con openrouter/free puede variar en cada llamada). */
+  /** Modelo que REALMENTE respondió (la versión exacta que informa el proveedor). */
   modelo: string;
-  uso: { entrada?: number; salida?: number; cacheLeida?: number; cacheCreada?: number };
+  uso: { entrada?: number; salida?: number; razonamiento?: number; cacheLeida?: number; cacheCreada?: number };
   latenciaMs: number;
 }
 
@@ -1008,22 +1181,35 @@ export interface ProveedorLLM {
 export function codigoPorHttp(status: number): CodigoError {
   if (status === 401 || status === 403) return 201;
   if (status === 402) return 207;
+  // 400 = el proveedor rechazó la forma de la petición; 404 = el modelo no existe.
+  // Ambos son configuración (o un error nuestro), nunca un fallo pasajero.
+  if (status === 400 || status === 404) return 208;
   if (status === 429) return 202;
   if (status === 408 || status === 504) return 204;
   return 206;
 }
 
 /** fetch con tiempo límite: el agotamiento se convierte en 204, la red caída en 206. */
-export async function fetchConLimite(url: string, init: RequestInit, timeoutMs: number, proveedor: string): Promise<Response> {
+export async function fetchConLimite(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  proveedor: string,
+  modelo?: string,
+): Promise<Response> {
   const control = new AbortController();
   const temporizador = setTimeout(() => control.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: control.signal });
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") {
-      throw new ErrorApp(204, `${proveedor}: sin respuesta en ${timeoutMs} ms`, { proveedor });
+      throw new ErrorApp(204, `${proveedor} (${modelo ?? "?"}): sin respuesta en ${timeoutMs} ms`, {
+        proveedor,
+        modelo,
+        espera_ms: timeoutMs,
+      });
     }
-    throw new ErrorApp(206, `${proveedor}: fallo de red — ${e instanceof Error ? e.message : String(e)}`, { proveedor });
+    throw new ErrorApp(206, `${proveedor}: fallo de red — ${e instanceof Error ? e.message : String(e)}`, { proveedor, modelo });
   } finally {
     clearTimeout(temporizador);
   }
@@ -1125,6 +1311,56 @@ export function validarImagenes(imagenes: Array<{ media_type: ImagenEntrada["med
   });
 }
 
+// ───────────── alcance.ts ─────────────
+// alcance.ts — Tratamiento de los errores fuera del alcance (MC-001 v1.0.4 §7.5, MC-002 v1.2.0 §16).
+//
+// Funciones puras: el flujo les pasa el grafo, las lecciones declaradas y los
+// estados del alumno, y ellas deciden. Tres tratamientos según el propietario:
+//   corregir_ahora → propietario ya estudiado: se corrige en la étape 17 en curso
+//   diferir        → aún no estudiado: observación ahora, corrección en su lección
+//   observar       → transversal, sin propietario o inexistente en el grafo
+
+
+export type Tratamiento = "corregir_ahora" | "diferir" | "observar";
+
+/** Extrae el identificador del grafo de lo que copió la IA ("EN-510 — Le verbe" → "EN-510"). */
+export function normalizarPropietario(texto: string | null | undefined): string | null {
+  return texto?.match(/\b([A-Z]{2}-\d{3})\b/)?.[1] ?? null;
+}
+
+/** ¿La lección pertenece al propietario? (es la lección misma, o está en su sous-domaine o dominio) */
+export function perteneceA(
+  leccion: Pick<LeccionDeclarada, "unidad_id" | "sous_domaine_id" | "dominio_id">,
+  propietario: string,
+): boolean {
+  return leccion.unidad_id === propietario || leccion.sous_domaine_id === propietario || leccion.dominio_id === propietario;
+}
+
+/** Dominio del grafo al que pertenece un identificador (dominio, sous-domaine o lección). */
+function dominioDelPropietario(grafo: Grafo, lecciones: LeccionDeclarada[], id: string): DominioGrafo | null {
+  const directo = grafo.dominios.find((d) => d.id === id || d.sous_domaines?.includes(id));
+  if (directo) return directo;
+  const leccion = lecciones.find((l) => l.unidad_id === id);
+  if (leccion) return grafo.dominios.find((d) => d.id === leccion.dominio_id) ?? null;
+  // Lección aún no declarada en «livrables» (p. ej. EN-412): su sous-domaine por convención (EN-410).
+  const sous = id.replace(/\d$/, "0");
+  return sous !== id ? grafo.dominios.find((d) => d.sous_domaines?.includes(sous)) ?? null : null;
+}
+
+export function clasificarFueraDeAlcance(
+  propietario: string | null,
+  datos: { grafo: Grafo; lecciones: LeccionDeclarada[]; estados: FilaEstadoUnidad[] },
+): Tratamiento {
+  if (!propietario) return "observar";
+  const dominio = dominioDelPropietario(datos.grafo, datos.lecciones, propietario);
+  if (!dominio || dominio.nature === "transversal") return "observar";
+  const estudiadas = new Set(
+    datos.estados.filter((e) => e.estado === "acquis" || e.estado === "consolide").map((e) => e.unidad_id),
+  );
+  const delPropietario = datos.lecciones.filter((l) => perteneceA(l, propietario));
+  return delPropietario.length > 0 && delPropietario.every((l) => estudiadas.has(l.unidad_id)) ? "corregir_ahora" : "diferir";
+}
+
 // ───────────── salida_llm.ts ─────────────
 // salida_llm.ts — Contratos de salida del agente y su validación.
 //
@@ -1159,10 +1395,20 @@ const ErrorDetectadoSchema = z.object({
   fuera_de_scope: z.boolean(),
   unidad_relacionada: z.string().nullable().optional().transform((v) => v ?? null),
   nivel: z.number().int().nullable().optional().transform((v) => v ?? null),
+  propietario: z.string().nullable().optional().transform((v) => v ?? null),
 });
+
+/** Una étape presentada (cambio 5: una sección por étape, cada texto corto). */
+export const SeccionSchema = z.object({
+  etapa: z.number().int(),
+  titulo: z.string(),
+  texto: z.string().min(1),
+});
+export type Seccion = z.infer<typeof SeccionSchema>;
 
 export const SalidaSolicitudSchema = z.object({
   mensaje_para_alumno: z.string().min(1),
+  secciones: z.array(SeccionSchema).default([]),
   solicitud: z
     .object({
       enunciado: z.string().min(1),
@@ -1193,6 +1439,10 @@ export const SalidaEvaluacionSchema = z.object({
     )
     .min(1),
   errores: z.array(ErrorDetectadoSchema).default([]),
+  /** Cambio 13: condiciones de contenido de las formas de evidencia (étape 15). La IA percibe; el código decide. */
+  condiciones: z
+    .array(z.object({ nivel: z.number().int().nullable(), condicion: z.string().min(1), cumple: z.boolean(), detalle: z.string() }))
+    .default([]),
 });
 
 export const SalidaCorreccionSchema = z.object({
@@ -1242,7 +1492,33 @@ export function extraerJson(texto: string): unknown {
   throw new Error("objeto JSON sin cerrar");
 }
 
-/** Valida contra el esquema; cualquier fallo → código 203 con un fragmento truncado para depurar. */
+/**
+ * Cambio 1: algunos modelos escapan dos veces los saltos de línea y envían los
+ * caracteres «\» + «n» sueltos. Se convierten en saltos reales en todos los
+ * textos de la respuesta. Solo actúa si hay una barra invertida.
+ */
+export function normalizarTextos(valor: unknown): unknown {
+  if (typeof valor === "string") {
+    if (!valor.includes("\\")) return valor;
+    return valor
+      .replace(/\\r\\n/g, "\n")
+      .replace(/\\n/g, "\n")
+      .replace(/\\t/g, "\t")
+      .replace(/\\"/g, '"');
+  }
+  if (Array.isArray(valor)) return valor.map(normalizarTextos);
+  if (valor && typeof valor === "object") {
+    return Object.fromEntries(Object.entries(valor).map(([k, v]) => [k, normalizarTextos(v)]));
+  }
+  return valor;
+}
+
+/**
+ * Valida contra el esquema; cualquier fallo → código 203 con un fragmento truncado
+ * para depurar. contexto.tipo_fallo le dice a la reparación qué hacer (cambio 3):
+ *   ilegible = ni siquiera es JSON → repetir desde cero
+ *   contrato = JSON válido con campos mal → pedir al modelo que lo corrija
+ */
 export function parsearSalida<T>(esquema: z.ZodType<T, z.ZodTypeDef, unknown>, texto: string, contexto: Record<string, unknown>): T {
   let crudo: unknown;
   try {
@@ -1250,19 +1526,167 @@ export function parsearSalida<T>(esquema: z.ZodType<T, z.ZodTypeDef, unknown>, t
   } catch (e) {
     throw new ErrorApp(203, `JSON ilegible: ${e instanceof Error ? e.message : String(e)}`, {
       ...contexto,
+      tipo_fallo: "ilegible",
       fragmento: texto.slice(0, 300),
     });
   }
-  const r = esquema.safeParse(crudo);
+  const r = esquema.safeParse(normalizarTextos(crudo));
   if (!r.success) {
     const problemas = r.error.issues.slice(0, 5).map((i) => `${i.path.join(".") || "(raíz)"}: ${i.message}`);
     throw new ErrorApp(203, `JSON fuera de contrato: ${problemas.join(" | ")}`, {
       ...contexto,
+      tipo_fallo: "contrato",
       fragmento: texto.slice(0, 300),
     });
   }
   return r.data;
 }
+
+/**
+ * Alarma del cambio 5: un texto de EXACTAMENTE 4096 caracteres casi seguro es
+ * un corte impuesto por el proveedor. Devuelve las rutas sospechosas.
+ */
+export function camposSospechosos(texto: string, limite = 4096): string[] {
+  let crudo: unknown;
+  try {
+    crudo = extraerJson(texto);
+  } catch {
+    return [];
+  }
+  const rutas: string[] = [];
+  const recorrer = (v: unknown, ruta: string) => {
+    if (typeof v === "string" && v.length === limite) rutas.push(ruta || "(raíz)");
+    else if (Array.isArray(v)) v.forEach((x, i) => recorrer(x, `${ruta}[${i}]`));
+    else if (v && typeof v === "object") Object.entries(v).forEach(([k, x]) => recorrer(x, ruta ? `${ruta}.${k}` : k));
+  };
+  recorrer(crudo, "");
+  return rutas;
+}
+
+// =====================================================================
+// Contratos completos: validación (zod) + esquema JSON estricto que se envía
+// al proveedor (mejora A) + ejemplo concreto para el prompt (mejora C).
+// Esquemas en formato "strict": todos los campos son obligatorios (los
+// opcionales admiten null) y additionalProperties es false. Los rangos
+// (mínimos, máximos) los sigue validando zod, porque el modo estricto de
+// los proveedores no los admite.
+// =====================================================================
+
+export interface Contrato<T> {
+  nombre: string;
+  zod: z.ZodType<T, z.ZodTypeDef, unknown>;
+  json: Record<string, unknown>;
+  ejemplo: unknown;
+}
+
+const obj = (props: Record<string, unknown>) => ({
+  type: "object",
+  additionalProperties: false,
+  required: Object.keys(props),
+  properties: props,
+});
+const texto = { type: "string" };
+const entero = { type: "integer" };
+const enteroONulo = { type: ["integer", "null"] };
+
+export const CONTRATO_SOLICITUD: Contrato<SalidaSolicitud> = {
+  nombre: "solicitud",
+  zod: SalidaSolicitudSchema,
+  json: obj({
+    mensaje_para_alumno: texto,
+    secciones: { type: "array", items: obj({ etapa: entero, titulo: texto, texto: texto }) },
+    solicitud: {
+      anyOf: [
+        { type: "null" },
+        obj({
+          enunciado: texto,
+          niveles: {
+            type: "array",
+            items: obj({
+              nivel: enteroONulo,
+              total_pedido: entero,
+              unidad_medida: { type: "string", enum: ["ejercicios", "palabras", "frases"] },
+            }),
+          },
+        }),
+      ],
+    },
+  }),
+  ejemplo: {
+    mensaje_para_alumno: "Formas de evidencia esperadas: … Ahora, los ejercicios.",
+    secciones: [
+      { etapa: 8, titulo: "Description grammaticale", texto: "…" },
+      { etapa: 9, titulo: "Utilisation", texto: "…" },
+    ],
+    solicitud: {
+      enunciado: "Nivel 1: …\n1. …\n2. …\nNivel 2: …\n1. …",
+      niveles: [
+        { nivel: 1, total_pedido: 8, unidad_medida: "ejercicios" },
+        { nivel: 2, total_pedido: 4, unidad_medida: "frases" },
+      ],
+    },
+  },
+};
+
+export const CONTRATO_EVALUACION: Contrato<SalidaEvaluacion> = {
+  nombre: "evaluacion",
+  zod: SalidaEvaluacionSchema,
+  json: obj({
+    mensaje_para_alumno: texto,
+    transcripcion: texto,
+    niveles: {
+      type: "array",
+      items: obj({ nivel: enteroONulo, total_entregado: entero, items_evaluados: entero, items_correctos: entero }),
+    },
+    errores: {
+      type: "array",
+      items: obj({
+        fragmento: texto,
+        correccion: texto,
+        causa: { type: "string", enum: [...CAUSAS] },
+        explicacion: texto,
+        fuera_de_scope: { type: "boolean" },
+        unidad_relacionada: { type: ["string", "null"] },
+        nivel: enteroONulo,
+        propietario: { type: ["string", "null"] },
+      }),
+    },
+    condiciones: {
+      type: "array",
+      items: obj({ nivel: enteroONulo, condicion: texto, cumple: { type: "boolean" }, detalle: texto }),
+    },
+  }),
+  ejemplo: {
+    mensaje_para_alumno: "Recibí tus respuestas…",
+    transcripcion: "1. …\n2. …",
+    niveles: [{ nivel: 1, total_entregado: 8, items_evaluados: 8, items_correctos: 7 }],
+    errores: [{
+      fragmento: "…",
+      correccion: "…",
+      causa: "generalisation_excessive",
+      explicacion: "…",
+      fuera_de_scope: false,
+      unidad_relacionada: null,
+      nivel: 1,
+      propietario: null,
+    }],
+    condiciones: [{ nivel: 3, condicion: "al menos 2 plurales irregulares", cumple: false, detalle: "solo hay 1: …" }],
+  },
+};
+
+export const CONTRATO_CORRECCION: Contrato<SalidaCorreccion> = {
+  nombre: "correccion",
+  zod: SalidaCorreccionSchema,
+  json: obj({ mensaje_para_alumno: texto, transcripcion: texto, indices_corregidos: { type: "array", items: entero } }),
+  ejemplo: { mensaje_para_alumno: "Corregiste bien los puntos 0 y 2…", transcripcion: "…", indices_corregidos: [0, 2] },
+};
+
+export const CONTRATO_MENSAJE: Contrato<z.infer<typeof SalidaMensajeSchema>> = {
+  nombre: "mensaje",
+  zod: SalidaMensajeSchema,
+  json: obj({ mensaje_para_alumno: texto }),
+  ejemplo: { mensaje_para_alumno: "Corrección détaillée: 1) … → … porque …" },
+};
 
 // ───────────── prompt.ts ─────────────
 // prompt.ts — Construcción del prompt (módulo PURO).
@@ -1298,6 +1722,8 @@ Eres el agente pedagógico del Método Chatito. EJECUTAS lecciones; no diseñas 
 - Nunca preguntes por el nivel previo del alumno.
 - Lo DECLARATIVO es fijo (P8): la regla, sus formas, su alcance, las excepciones, los errores frecuentes con su causa y las formas de evidencia salen EXACTAMENTE del livrable. No añadas, quites ni modifiques reglas o excepciones. Si algo necesario no está en el livrable, dilo en tu mensaje en vez de inventarlo.
 - Lo PROCEDIMENTAL es libre y debe variar en cada sesión: genera ejemplos nuevos, ejercicios propios y explicaciones adaptadas a este alumno (otra formulación, otra analogía, otro ángulo). No copies los ejemplos del livrable: úsalos solo como referencia. Todo lo que generes debe cumplir la regla del livrable; la variación está en cómo se enseña, nunca en qué se enseña.
+- Explica con TUS palabras y de forma más sencilla que el livrable: no lo traduzcas ni lo copies frase por frase. Usa frases cortas, analogías y otro ángulo; el livrable es tu fuente, no tu guion.
+- Al anotar un ejemplo (por qué lleva esa forma), cita SOLO reglas que existan en el livrable y que el ejemplo realmente ilustre. Si un ejemplo no ilustra con claridad una regla del livrable, no lo anotes o cámbialo.
 
 # Corrección (MC-002)
 - Alcance: ${mc.evidencia_y_estado.regla_de_scope_de_correccion.regla}
@@ -1310,18 +1736,26 @@ Eres el agente pedagógico del Método Chatito. EJECUTAS lecciones; no diseñas 
 
 # Idioma
 - Explicaciones e instrucciones al alumno: en ${idiomaInterfaz}. Ejemplos y ejercicios: en la lengua meta.
+- Los términos técnicos del livrable (escrito en francés) se TRADUCEN al ${idiomaInterfaz} en todo lo que lee el alumno (p. ej. «pluriels réguliers» → «plurales regulares»). Solo los ejemplos y ejercicios van en la lengua meta. Los títulos de las étapes pueden quedar como en el livrable.
 
 # Formato de salida (OBLIGATORIO)
 Responde SOLO con un objeto JSON válido: sin texto antes ni después y sin bloques de código.
 Según la TAREA indicada en el contexto del turno:
 - presentar / solicitar:
-  {"mensaje_para_alumno": string, "solicitud": null | {"enunciado": string, "niveles": [{"nivel": 1|2|3|null, "total_pedido": entero>0, "unidad_medida": "ejercicios"|"palabras"|"frases"}]}}
+  {"mensaje_para_alumno": string, "secciones": [{"etapa": entero, "titulo": string, "texto": string}], "solicitud": null | {"enunciado": string, "niveles": [{"nivel": 1|2|3|null, "total_pedido": entero>0, "unidad_medida": "ejercicios"|"palabras"|"frases"}]}}
 - evaluar:
-  {"mensaje_para_alumno": string, "transcripcion": string, "niveles": [{"nivel": entero|null, "total_entregado": entero>=0, "items_evaluados": entero>=0, "items_correctos": entero>=0}], "errores": [{"fragmento": string, "correccion": string, "causa": string, "explicacion": string, "fuera_de_scope": boolean, "unidad_relacionada": string|null, "nivel": entero|null}]}
+  {"mensaje_para_alumno": string, "transcripcion": string, "niveles": [{"nivel": entero|null, "total_entregado": entero>=0, "items_evaluados": entero>=0, "items_correctos": entero>=0}], "errores": [{"fragmento": string, "correccion": string, "causa": string, "explicacion": string, "fuera_de_scope": boolean, "unidad_relacionada": string|null, "nivel": entero|null, "propietario": string|null}], "condiciones": [{"nivel": entero|null, "condicion": string, "cumple": boolean, "detalle": string}]}
 - corregir:
   {"mensaje_para_alumno": string}
 - verificar_correccion:
-  {"mensaje_para_alumno": string, "transcripcion": string, "indices_corregidos": [entero]}`;
+  {"mensaje_para_alumno": string, "transcripcion": string, "indices_corregidos": [entero]}
+Todos los campos son obligatorios: si no aplica, usa null (nunca omitas un campo ni cambies su nombre).
+
+# Ejemplos de forma (el contenido real sale de la lección)
+- presentar / solicitar: ${JSON.stringify(CONTRATO_SOLICITUD.ejemplo)}
+- evaluar: ${JSON.stringify(CONTRATO_EVALUACION.ejemplo)}
+- corregir: ${JSON.stringify(CONTRATO_MENSAJE.ejemplo)}
+- verificar_correccion: ${JSON.stringify(CONTRATO_CORRECCION.ejemplo)}`;
 }
 
 export function bloqueContexto(unidad: { id: string; titulo: string; dominio: string; idioma: string }, livrable: string): string {
@@ -1343,28 +1777,30 @@ export function bloqueDinamico(mc: McOperacional, tarea: Tarea): string {
     case "presentar": {
       const partes = [
         `TAREA: presentar`,
-        `Presenta, en este orden, las étapes: ${etapas}. La regla sale del livrable; la forma de explicarla es tuya.`,
+        `Presenta las étapes: ${etapas}. La regla sale del livrable; la forma de explicarla es tuya.`,
+        `Escribe CADA étape en su propia entrada de «secciones» (etapa = su número, titulo = su nombre, texto = su contenido), en orden y SIN omitir ninguna: ${tarea.paso.etapas.join(", ")}. No pongas el contenido de las étapes en «mensaje_para_alumno».`,
       ];
       if (tarea.paso.etapas.includes(13)) {
         partes.push(`Étape 13: al menos 5 ejemplos NUEVOS (no los del livrable), en contextos variados — registros, sujetos y situaciones distintos (MC-001 §13).`);
       }
       if (tarea.paso.cierra_unidad) {
-        partes.push(`Es el CIERRE de la unidad: recapitula el vocabulario. "solicitud" debe ser null.`);
+        partes.push(`Es el CIERRE de la unidad: recapitula el vocabulario. En «mensaje_para_alumno», una despedida breve. "solicitud" debe ser null.`);
       } else if (tarea.incluirSolicitud && tarea.siguiente) {
         partes.push(
           `Dentro de la étape 14, declara las transformaciones previstas para la étape 18, sin ejecutarlas.`,
-          `Antes de pedir producción, declara las formas de evidencia esperadas por nivel (étape 15). Tómalas del livrable; si el livrable no las declara, dilo y usa los ejemplos de MC-001 §15 (nivel 1: respuesta escrita corta; nivel 2: frase completa; nivel 3: producción libre escrita o foto de producción manuscrita).`,
+          `En «mensaje_para_alumno», antes de pedir producción, declara las formas de evidencia esperadas por nivel (étape 15). Tómalas del livrable; si el livrable no las declara, dilo y usa los ejemplos de MC-001 §15 (nivel 1: respuesta escrita corta; nivel 2: frase completa; nivel 3: producción libre escrita o foto de producción manuscrita).`,
           instruccionSolicitud(mc, tarea.siguiente),
         );
       } else {
-        partes.push(`"solicitud" debe ser null.`);
+        partes.push(`En «mensaje_para_alumno», una transición breve. "solicitud" debe ser null.`);
       }
       return partes.join("\n");
     }
     case "solicitar":
       return [
         `TAREA: solicitar`,
-        `Declara primero las formas de evidencia esperadas para esta producción (étape 15), tomándolas del livrable.`,
+        `«secciones» debe ser una lista vacía: aquí no se presentan étapes.`,
+        ...instruccionesPorEtapa(tarea.paso),
         instruccionSolicitud(mc, tarea.paso),
         tarea.paso.etapas.includes(18)
           ? `Ejecuta, con el alumno, las transformaciones previstas declaradas en la étape 14 del livrable, sobre las frases principales producidas o estudiadas en la lección (ya corregidas en la étape 17). Esta étape no se corrige (MC-001 §18).`
@@ -1376,7 +1812,12 @@ export function bloqueDinamico(mc: McOperacional, tarea: Tarea): string {
       const niveles = (r.niveles ?? [])
         .map((n) => `  - nivel ${n.nivel ?? "único"}: pedido ${n.total_pedido} ${n.unidad_medida}, mínimo ${n.minimo_requerido}`)
         .join("\n");
-      const previas = (r.transcripciones_previas ?? []).length
+      const textoUnico = esTextoUnico(r.niveles);
+      const previas = textoUnico
+        ? `Esta producción es UN SOLO texto: esta entrega es el texto COMPLETO y REEMPLAZA a las anteriores. Evalúa SOLO esta entrega.\n` +
+          `Las palabras las cuenta el sistema sobre tu transcripción: en «transcripcion» pon SOLO el texto del alumno, completo y sin comentarios. ` +
+          `En tu mensaje NO digas cuántas palabras tiene ni si alcanza el mínimo: eso lo informa el sistema.`
+        : (r.transcripciones_previas ?? []).length
         ? `Entregas ANTERIORES de este mismo paso (evalúa la UNIÓN de todo lo entregado):\n${
           r.transcripciones_previas!.map((t, i) => `  [${i + 1}] ${t}`).join("\n")
         }`
@@ -1395,14 +1836,19 @@ export function bloqueDinamico(mc: McOperacional, tarea: Tarea): string {
         tarea.paso.categoria === "libre"
           ? `Producción libre: items_evaluados = ocurrencias del objetivo de la unidad en el texto; items_correctos = las correctas.`
           : `Ejercicios: items_evaluados = ítems entregados que pudiste evaluar.`,
-        `Si en algún nivel lo entregado no alcanza el mínimo: pide completar SOLO lo que falta.`,
+        textoUnico ? "" : `Si en algún nivel lo entregado no alcanza el mínimo: pide completar SOLO lo que falta.`,
+        tarea.paso.etapas.includes(ETAPA_FORMAS_EVIDENCIA)
+          ? `condiciones: por CADA condición de contenido que el livrable declara en las formas de evidencia de la étape 15 para los niveles de este paso (todo lo que no sea la cantidad; p. ej. «al menos 2 plurales irregulares», «frase completa»), un elemento {nivel, condicion, cumple, detalle}. Evalúa la UNIÓN de todas las entregas. En «detalle», lo que encontraste (p. ej. «solo hay 1: children»). No inventes condiciones que el livrable no declara. Si alguna no se cumple: en tu mensaje pide SOLO lo necesario para cumplirla (p. ej. una frase más con un plural irregular), sin corregir.`
+          : `condiciones: lista vacía (este paso no tiene formas de evidencia de la étape 15).`,
         tarea.paso.correccion === "diferida"
           ? `La corrección de este paso es DIFERIDA a la étape 17 (MC-001 §17): en tu mensaje NO corrijas ni señales errores; acusa recibo y, si procede, pide lo que falta. Aun así, reporta TODOS los errores en el JSON.`
           : tarea.paso.correccion === "ninguna"
           ? `Este paso NO se corrige (MC-001 §18): en tu mensaje NO corrijas, no señales errores y no pidas reescribir; acusa recibo y, si procede, pide lo que falta. Aun así, reporta TODOS los errores en el JSON, solo como registro de evidencia.`
           : `Si alcanza el mínimo y hay errores dentro del alcance: presenta la corrección con su diagnóstico y pide reescribir SOLO lo señalado. Si no alcanza el mínimo, no corrijas todavía.`,
         `transcripcion: transcribe fielmente lo que produjo el alumno (texto e imágenes).`,
-      ].join("\n");
+        `Errores fuera del objetivo de la lección (fuera_de_scope = true): en «propietario» copia el identificador que les asigna la tabla de fronteras del livrable (p. ej. "EN-510"); null si el error no corresponde a ninguna fila de esa tabla. Para los errores del objetivo, propietario = null.`,
+        `En «errores» reporta SOLO formas incorrectas: una forma correcta nunca es un error y «correccion» siempre es distinta de «fragmento». Los aciertos se cuentan en items_correctos.`,
+      ].filter(Boolean).join("\n");
     }
 
     case "corregir":
@@ -1415,6 +1861,9 @@ export function bloqueDinamico(mc: McOperacional, tarea: Tarea): string {
         ...tarea.errores.map((e) =>
           `  [${e.indice}] (${e.paso ?? "?"}) "${e.fragmento}" → "${e.correccion}" — causa: ${e.causa ?? "?"} — ${e.explicacion}`
         ),
+        `Menciona TODOS los errores de la lista, cada uno con su número [i]; no omitas ninguno.`,
+        `Los errores marcados «otra lección» son de un tema ya estudiado o diferido a esta lección: corrígelos igual, apoyándote en su explicación registrada.`,
+        `No menciones otros errores fuera del objetivo: el sistema los muestra aparte como observación.`,
         `Termina pidiendo al alumno que reescriba cada fragmento señalado.`,
       ].join("\n");
 
@@ -1425,9 +1874,27 @@ export function bloqueDinamico(mc: McOperacional, tarea: Tarea): string {
         ...tarea.errores.map((e) => `  [${e.indice}] "${e.fragmento}" → esperado: "${e.correccion}" (${e.explicacion})`),
         `Devuelve en indices_corregidos los índices corregidos CORRECTAMENTE.`,
         `Una corrección vale aunque difiera de la forma sugerida, si es gramaticalmente correcta respecto del objetivo de la unidad.`,
-        `En el mensaje: confirma lo corregido y explica brevemente lo que siga pendiente.`,
+        `En el mensaje: confirma lo corregido y nombra CADA pendiente con su número [i] y su fragmento, explicando brevemente qué falta.`,
       ].join("\n");
   }
+}
+
+/** MC-001 §15: las formas de evidencia se declaran en la étape 15 (cambio 13). */
+export const ETAPA_FORMAS_EVIDENCIA = 15;
+
+/** Cambio 14: qué se declara antes de pedir cada producción. */
+function instruccionesPorEtapa(paso: PasoPlan): string[] {
+  if (paso.etapas.includes(ETAPA_FORMAS_EVIDENCIA)) {
+    return [`Declara primero las formas de evidencia esperadas para esta producción (étape 15), tomándolas del livrable.`];
+  }
+  if (paso.etapas.includes(16)) {
+    return [
+      `Étape 16 — Production écrite (MC-001 §16): NO declares las formas de evidencia de la étape 15.`,
+      `La consigna da SOLO el tema (una de las pistas del livrable u otro de la vida diaria) y la extensión que fija el livrable. ` +
+      `NO menciones la regla, la gramática ni sus términos, ni des listas de palabras para usar: el objetivo de la unidad debe aparecer de forma NATURAL.`,
+    ];
+  }
+  return [`No declares las formas de evidencia de la étape 15: no aplican a este paso.`];
 }
 
 function instruccionSolicitud(mc: McOperacional, paso: PasoPlan): string {
@@ -2080,6 +2547,8 @@ export interface ContextoFlujo {
   registro: Registrador;
   auxiliares: ServiciosAuxiliares | null;
   obtenerLLM: () => ProveedorLLM;
+  /** Modelo para el segundo intento tras saturación o tiempo agotado; null = el mismo (cambio 11). */
+  obtenerLLMRespaldo?: () => ProveedorLLM | null;
   mc: McOperacional;
   grafos: Readonly<Record<string, Grafo>>;
   usuarioId: string;
@@ -2087,6 +2556,8 @@ export interface ContextoFlujo {
   ahora: () => Date;
   aleatorio: () => number;
   fallarAbiertoSiRedisCae: boolean;
+  /** Pausa antes de reintentar un fallo pasajero (inyectable para las pruebas). */
+  pausa?: (ms: number) => Promise<void>;
 }
 
 export interface PeticionEstudiante {
@@ -2109,6 +2580,10 @@ const MENSAJE_CONTINUAR = "(El alumno pulsó «continuar».)";
 // Entrada
 // =====================================================================
 export async function manejarEstudiante(ctx: ContextoFlujo, p: PeticionEstudiante): Promise<RespuestaFlujo> {
+  // Aviso de Privacidad v1.0: sin consentimiento registrado no se trata ningún dato de aprendizaje.
+  if (!(await ctx.repo.consentimientoRegistrado(ctx.usuarioId))) {
+    throw new ErrorApp(313, "Consentimiento pendiente (migración 004: registrar_consentimiento)");
+  }
   const ai = await ctx.repo.obtenerAlumnoIdioma(p.alumno_idioma_id);
   // Mismo error si no existe o si es de otro usuario: no revelar qué IDs existen.
   if (!ai || ai.perfil_id !== ctx.usuarioId) {
@@ -2148,13 +2623,19 @@ async function continuar(ctx: ContextoFlujo, s: Estado): Promise<RespuestaFlujo>
   const req = s.sesion.requisitos_etapa;
   switch (req.estado_paso) {
     case "esperando_evidencia":
-    case "esperando_correccion":
+    case "esperando_correccion": {
       // Retomar tras recargar la app: sin llamar al LLM.
+      if (req.estado_paso === "esperando_correccion") {
+        const saneada = await sanearCorreccion(ctx, s, pasoPorNombre(plan, req.paso));
+        if (saneada) return saneada;
+      }
+      const actual = s.sesion.requisitos_etapa;
       return {
-        mensaje_agente: req.ultimo_mensaje_agente ?? req.enunciado ?? null,
-        mensaje_sistema: "Retomamos donde te quedaste.",
+        mensaje_agente: actual.ultimo_mensaje_agente ?? actual.enunciado ?? null,
+        mensaje_sistema: ["Retomamos donde te quedaste.", actual.ultimo_mensaje_sistema].filter(Boolean).join(" "),
         estado: estadoPublico(s.sesion),
       };
+    }
 
     case "curriculo_bloqueado":
     case "curriculo_completado": {
@@ -2183,7 +2664,7 @@ async function entregarPaso(ctx: ContextoFlujo, s: Estado): Promise<RespuestaFlu
   const plan = ctx.mc.leccion.plan_ejecucion.pasos;
   const sesion = s.sesion!;
   const paso = pasoPorNombre(plan, sesion.requisitos_etapa.paso);
-  const acumulados = sesion.requisitos_etapa.errores_acumulados;
+  const acumulados = arrastre(sesion.requisitos_etapa);
   if (paso.tipo === "correccion") return await entregarCorreccion(ctx, s, paso);
   const livrable = await cargarLivrable(ctx, sesion.unidad_id);
 
@@ -2194,12 +2675,15 @@ async function entregarPaso(ctx: ContextoFlujo, s: Estado): Promise<RespuestaFlu
       tarea: { tipo: "presentar", paso, siguiente, incluirSolicitud },
       mensaje: MENSAJE_CONTINUAR,
       imagenes: [],
-      esquema: SalidaSolicitudSchema,
+      contrato: CONTRATO_SOLICITUD,
       maxTokens: INFRA.MAX_TOKENS_PRESENTACION,
       temperatura: 0.5,
+      validar: (x) => faltanEtapes(x.secciones, paso.etapas),
     });
+    const secciones = ordenarSecciones(salida.secciones, paso.etapas);
+    const mensaje = componerPresentacion(secciones, salida.mensaje_para_alumno);
 
-    if (paso.cierra_unidad) return await completarUnidad(ctx, s, salida.mensaje_para_alumno);
+    if (paso.cierra_unidad) return { ...(await completarUnidad(ctx, s, mensaje)), secciones };
     if (!siguiente) throw new ErrorApp(598, `El paso ${paso.paso} no tiene sucesor y no cierra la unidad`);
 
     if (incluirSolicitud && salida.solicitud) {
@@ -2213,11 +2697,11 @@ async function entregarPaso(ctx: ContextoFlujo, s: Estado): Promise<RespuestaFlu
           enunciado: salida.solicitud.enunciado,
           niveles,
           transcripciones_previas: [],
-          errores_acumulados: acumulados,
-          ultimo_mensaje_agente: salida.mensaje_para_alumno,
+          ...acumulados,
+          ultimo_mensaje_agente: mensaje,
         },
       });
-      return { mensaje_agente: salida.mensaje_para_alumno, mensaje_sistema: textoPedido(niveles), estado: estadoPublico(s.sesion) };
+      return { mensaje_agente: mensaje, secciones, mensaje_sistema: textoPedido(niveles), estado: estadoPublico(s.sesion) };
     }
 
     if (incluirSolicitud) {
@@ -2231,9 +2715,9 @@ async function entregarPaso(ctx: ContextoFlujo, s: Estado): Promise<RespuestaFlu
     s.sesion = await ctx.repo.actualizarSesion(sesion, {
       etapa_actual: siguiente.etapas[0],
       fase_correccion: null,
-      requisitos_etapa: { paso: siguiente.paso, estado_paso: "pendiente_presentar", errores_acumulados: acumulados },
+      requisitos_etapa: { paso: siguiente.paso, estado_paso: "pendiente_presentar", ...acumulados },
     });
-    return { mensaje_agente: salida.mensaje_para_alumno, mensaje_sistema: null, estado: estadoPublico(s.sesion) };
+    return { mensaje_agente: mensaje, secciones, mensaje_sistema: null, estado: estadoPublico(s.sesion) };
   }
 
   // Paso de producción: solicitar (declarando antes las formas de evidencia, MC-001 §15).
@@ -2241,7 +2725,7 @@ async function entregarPaso(ctx: ContextoFlujo, s: Estado): Promise<RespuestaFlu
     tarea: { tipo: "solicitar", paso },
     mensaje: MENSAJE_CONTINUAR,
     imagenes: [],
-    esquema: SalidaSolicitudSchema,
+    contrato: CONTRATO_SOLICITUD,
     maxTokens: INFRA.MAX_TOKENS_PRESENTACION,
     temperatura: 0.5,
   });
@@ -2256,7 +2740,7 @@ async function entregarPaso(ctx: ContextoFlujo, s: Estado): Promise<RespuestaFlu
       enunciado: salida.solicitud.enunciado,
       niveles,
       transcripciones_previas: [],
-      errores_acumulados: acumulados,
+      ...acumulados,
       ultimo_mensaje_agente: salida.mensaje_para_alumno,
     },
   });
@@ -2296,22 +2780,40 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
     tarea: { tipo: "evaluar", paso, requisitos: req, estudiadas: await unidadesEstudiadas(ctx, s) },
     mensaje: texto || "(El alumno envió solo imágenes.)",
     imagenes,
-    esquema: SalidaEvaluacionSchema,
+    contrato: CONTRATO_EVALUACION,
     maxTokens: INFRA.MAX_TOKENS_EVALUACION,
     temperatura: 0.2,
   });
 
-  const metricas = emparejarNiveles(req.niveles, salida.niveles);
+  // Cambio 18: una «corrección» idéntica al fragmento no es un error (la IA a veces lista aciertos).
+  const errores = salida.errores.filter(esErrorReal);
+  if (errores.length < salida.errores.length) {
+    await ctx.registro.registrar({
+      codigo: 203,
+      severidad: "warning",
+      mensaje: `Se descartaron ${salida.errores.length - errores.length} «errores» con corrección idéntica al fragmento`,
+      contexto: { paso: paso.paso, fragmentos: salida.errores.filter((e) => !esErrorReal(e)).map((e) => e.fragmento) },
+    });
+  }
+
+  // Cambio 15: en un texto único, las palabras las cuenta el código sobre la transcripción de ESTA entrega.
+  const textoUnico = esTextoUnico(req.niveles);
+  const metricas = emparejarNiveles(req.niveles, salida.niveles).map((m) =>
+    textoUnico ? { ...m, total_entregado: contarPalabras(salida.transcripcion) } : m
+  );
   const factor = ctx.mc.modos_operacion.estudiante.criterio_completitud.factor_minimo;
   const decision = evaluarProduccion(
     metricas.map((m) => ({ nivel: m.nivel, total_pedido: m.total_pedido, total_entregado: m.total_entregado })),
     factor,
   );
+  // Cambio 13: la cantidad no basta; también deben cumplirse las condiciones de contenido de la étape 15.
+  const condicionesFallidas = paso.etapas.includes(ETAPA_FORMAS_EVIDENCIA) ? salida.condiciones.filter((c) => !c.cumple) : [];
+  const completa = decision.cumple && condicionesFallidas.length === 0;
   const intento: Intento = (req.transcripciones_previas?.length ?? 0) === 0 ? "inicial" : "complemento";
   const archivos = await subirImagenes(ctx, s, imagenes);
   const contenido = componerContenido(texto, imagenes.length, salida.transcripcion);
   // Corrección diferida (MC-001 §17): sin evidencia completa no hay corrección ni diagnóstico.
-  const enAlcance = decision.cumple ? salida.errores.filter((e) => !e.fuera_de_scope) : [];
+  const enAlcance = completa ? errores.filter((e) => !e.fuera_de_scope) : [];
   const nivelesValidos = new Set(metricas.map((m) => m.nivel));
 
   const filas: FilaEvidenciaNueva[] = metricas.map((m, i) => {
@@ -2327,7 +2829,7 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
       contenido_alumno: contenido,
       url_storage: archivos[0] ?? null,
       correccion: erroresFila.length ? erroresFila.map((e) => `${e.fragmento} → ${e.correccion}`).join("\n") : null,
-      diagnosticos: decision.cumple ? propios(salida.errores) : null,
+      diagnosticos: completa ? propios(errores) : null,
       metricas: {
         paso: paso.paso,
         intento,
@@ -2338,28 +2840,36 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
         total_entregado: m.total_entregado,
         items_evaluados: m.items_evaluados,
         items_correctos: m.items_correctos,
-        diagnostico_diferido: !decision.cumple,
+        diagnostico_diferido: !completa,
+        conteo: textoUnico ? "codigo" : "ia",
+        condiciones: salida.condiciones.filter((c) => c.nivel === m.nivel || (i === 0 && !nivelesValidos.has(c.nivel))),
         archivos,
       },
     };
   });
   await ctx.repo.insertarEvidencias(filas); // ← ANTES de cualquier avance
 
-  if (!decision.cumple) {
+  if (!completa) {
+    const faltas = [
+      ...decision.detalle
+        .filter((d) => !d.cumple)
+        .map((d) => `nivel ${d.nivel ?? "único"}: ${d.entregado} de ${d.pedido} (mínimo ${d.minimo})`),
+      ...condicionesFallidas.map((c) => `nivel ${c.nivel ?? "único"}: falta «${c.condicion}»${c.detalle ? ` (${c.detalle})` : ""}`),
+    ].join("; ");
+    const aviso = textoUnico
+      ? `Tu texto tiene ${metricas[0].total_entregado} palabras; el mínimo es ${metricas[0].minimo_requerido}. Reenvía el texto COMPLETO, ampliado.`
+      : `Aún falta producción — ${faltas}. Envía solo lo que falta.`;
     s.sesion = await ctx.repo.actualizarSesion(sesion, {
       requisitos_etapa: {
         ...req,
         transcripciones_previas: [...(req.transcripciones_previas ?? []), salida.transcripcion],
         ultimo_mensaje_agente: salida.mensaje_para_alumno,
+        ultimo_mensaje_sistema: aviso,
       },
     });
-    const faltas = decision.detalle
-      .filter((d) => !d.cumple)
-      .map((d) => `nivel ${d.nivel ?? "único"}: ${d.entregado} de ${d.pedido} (mínimo ${d.minimo})`)
-      .join("; ");
     return {
       mensaje_agente: salida.mensaje_para_alumno,
-      mensaje_sistema: `Aún falta producción — ${faltas}. Envía solo lo que falta.`,
+      mensaje_sistema: aviso,
       resultado: "requiere_completar",
       estado: estadoPublico(s.sesion),
     };
@@ -2378,6 +2888,18 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
     // MC-001 §17: la corrección espera a que termine la colecta de las étapes 15 y 16.
     const previos = req.errores_acumulados ?? [];
     const acumulados = [...previos, ...enAlcance.map((e, i) => aSenalado(e, previos.length + i))];
+    // Cambio 19: lo que está fuera del alcance viaja aparte; se mostrará en la étape 17 sin evaluarse.
+    const observaciones = [
+      ...(req.observaciones_acumuladas ?? []),
+      ...errores.filter((e) => e.fuera_de_scope).map((e) => ({
+        fragmento: e.fragmento,
+        correccion: e.correccion,
+        paso: paso.paso,
+        propietario: normalizarPropietario(e.propietario), // MC-001 §7.5
+        explicacion: e.explicacion,
+        causa: e.causa,
+      })),
+    ];
     return await avanzar(
       ctx,
       s,
@@ -2385,6 +2907,7 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
       salida.mensaje_para_alumno,
       "Producción registrada. La corrección se hará en la étape 17, con toda la evidencia reunida.",
       acumulados,
+      observaciones,
     );
   }
 
@@ -2395,6 +2918,7 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
 
   if (enAlcance.length > 0) {
     const senalados: ErrorSenalado[] = enAlcance.map((e, i) => aSenalado(e, i));
+    const aviso = `Para continuar se exige corregir el 100 %. ${listaPendientes(senalados)}`;
     s.sesion = await ctx.repo.actualizarSesion(sesion, {
       etapa_actual: ctx.mc.leccion.plan_ejecucion.etapa_correccion,
       fase_correccion: "correction_differee",
@@ -2403,11 +2927,12 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
         estado_paso: "esperando_correccion",
         errores_senalados: senalados,
         ultimo_mensaje_agente: salida.mensaje_para_alumno,
+        ultimo_mensaje_sistema: aviso,
       },
     });
     return {
       mensaje_agente: salida.mensaje_para_alumno,
-      mensaje_sistema: `Hay ${senalados.length} corrección(es) pendiente(s). Para continuar se exige corregir el 100%.`,
+      mensaje_sistema: aviso,
       resultado: "requiere_correccion",
       estado: estadoPublico(s.sesion),
     };
@@ -2418,9 +2943,11 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
 
 async function verificarCorreccion(ctx: ContextoFlujo, s: Estado, texto: string, imagenes: ImagenEntrada[]): Promise<RespuestaFlujo> {
   const plan = ctx.mc.leccion.plan_ejecucion.pasos;
+  const paso = pasoPorNombre(plan, s.sesion!.requisitos_etapa.paso);
+  const saneada = await sanearCorreccion(ctx, s, paso); // cambio 18: sesiones guardadas antes del filtro
+  if (saneada) return saneada;
   const sesion = s.sesion!;
   const req = sesion.requisitos_etapa;
-  const paso = pasoPorNombre(plan, req.paso);
   const senalados = req.errores_senalados ?? [];
   if (senalados.length === 0) {
     await ctx.registro.registrar({ codigo: 598, severidad: "warning", mensaje: "esperando_correccion sin errores señalados; se avanza" });
@@ -2432,12 +2959,14 @@ async function verificarCorreccion(ctx: ContextoFlujo, s: Estado, texto: string,
     tarea: { tipo: "verificar_correccion", paso, errores: senalados },
     mensaje: texto || "(El alumno envió solo imágenes.)",
     imagenes,
-    esquema: SalidaCorreccionSchema,
+    contrato: CONTRATO_CORRECCION,
     maxTokens: INFRA.MAX_TOKENS_EVALUACION,
     temperatura: 0.2,
   });
 
   const r = evaluarCorreccion(senalados.map((e) => e.indice), salida.indices_corregidos);
+  // MC-001 §7.5: un error diferido corregido ya no está pendiente.
+  await saldarDiferidos(ctx, senalados.filter((e) => !r.pendientes.includes(e.indice)));
   const archivos = await subirImagenes(ctx, s, imagenes);
   await ctx.repo.insertarEvidencias([{
     alumno_idioma_id: s.ai.id,
@@ -2461,14 +2990,55 @@ async function verificarCorreccion(ctx: ContextoFlujo, s: Estado, texto: string,
   if (r.completa) return await avanzar(ctx, s, paso, salida.mensaje_para_alumno, "Corrección completa (100%).");
 
   const pendientes = senalados.filter((e) => r.pendientes.includes(e.indice));
+  const aviso = `Corregiste ${r.corregidos} de ${senalados.length}. ${listaPendientes(pendientes)}`;
   s.sesion = await ctx.repo.actualizarSesion(sesion, {
-    requisitos_etapa: { ...req, errores_senalados: pendientes, ultimo_mensaje_agente: salida.mensaje_para_alumno },
+    requisitos_etapa: {
+      ...req,
+      errores_senalados: pendientes,
+      ultimo_mensaje_agente: salida.mensaje_para_alumno,
+      ultimo_mensaje_sistema: aviso,
+    },
   });
   return {
     mensaje_agente: salida.mensaje_para_alumno,
-    mensaje_sistema: `Corregiste ${r.corregidos} de ${senalados.length}. Faltan ${pendientes.length}.`,
+    mensaje_sistema: aviso,
     resultado: "correccion_incompleta",
     estado: estadoPublico(s.sesion),
+  };
+}
+
+/**
+ * Cambio 18: quita de lo señalado las «correcciones» idénticas al fragmento
+ * (sesiones guardadas antes del filtro de la evaluación). Si no queda nada
+ * real, la corrección está completa y se avanza; si cambia algo, se guarda la
+ * lista depurada. Devuelve la respuesta solo cuando avanza.
+ */
+async function sanearCorreccion(ctx: ContextoFlujo, s: Estado, paso: PasoPlan): Promise<RespuestaFlujo | null> {
+  const req = s.sesion!.requisitos_etapa;
+  const lista = req.errores_senalados ?? [];
+  const reales = lista.filter(esErrorReal);
+  if (reales.length === lista.length) return null;
+  await ctx.registro.registrar({
+    codigo: 203,
+    severidad: "warning",
+    mensaje: `Se descartaron ${lista.length - reales.length} pendientes con corrección idéntica al fragmento`,
+    contexto: { paso: paso.paso, fragmentos: lista.filter((e) => !esErrorReal(e)).map((e) => e.fragmento) },
+  });
+  await saldarDiferidos(ctx, lista.filter((e) => !esErrorReal(e)));
+  if (reales.length === 0) {
+    return await avanzar(ctx, s, paso, null, "Corrección completa: lo que quedaba pendiente no eran errores.");
+  }
+  s.sesion = await ctx.repo.actualizarSesion(s.sesion!, {
+    requisitos_etapa: { ...req, errores_senalados: reales, ultimo_mensaje_sistema: listaPendientes(reales) },
+  });
+  return null;
+}
+
+/** Lo que viaja entre pasos hasta la étape 17: errores a corregir y observaciones (cambio 19). */
+function arrastre(req: Pick<Requisitos, "errores_acumulados" | "observaciones_acumuladas">) {
+  return {
+    ...(req.errores_acumulados?.length ? { errores_acumulados: req.errores_acumulados } : {}),
+    ...(req.observaciones_acumuladas?.length ? { observaciones_acumuladas: req.observaciones_acumuladas } : {}),
   };
 }
 
@@ -2479,6 +3049,7 @@ async function avanzar(
   mensajeAgente: string | null,
   mensajeSistema: string,
   acumulados: ErrorSenalado[] | undefined = s.sesion!.requisitos_etapa.errores_acumulados,
+  observaciones: Observacion[] | undefined = s.sesion!.requisitos_etapa.observaciones_acumuladas,
 ): Promise<RespuestaFlujo> {
   const siguiente = siguientePaso(ctx.mc.leccion.plan_ejecucion.pasos, paso);
   if (!siguiente) throw new ErrorApp(598, `El paso ${paso.paso} no tiene sucesor`);
@@ -2488,7 +3059,7 @@ async function avanzar(
     requisitos_etapa: {
       paso: siguiente.paso,
       estado_paso: "pendiente_presentar",
-      ...(acumulados?.length ? { errores_acumulados: acumulados } : {}),
+      ...arrastre({ errores_acumulados: acumulados, observaciones_acumuladas: observaciones }),
     },
   });
   return { mensaje_agente: mensajeAgente, mensaje_sistema: mensajeSistema, resultado: "avanza", estado: estadoPublico(s.sesion) };
@@ -2497,9 +3068,104 @@ async function avanzar(
 // =====================================================================
 // Étape 17 — corrección diferida de las étapes 15 y 16
 // =====================================================================
+/**
+ * MC-001 v1.0.4 §7.5 — al entrar a la étape 17, cada observación fuera del alcance se clasifica:
+ *   corregir_ahora → se suma a lo que hay que corregir aquí
+ *   diferir        → se guarda en errores_diferidos y se muestra «(se corregirá en X)»
+ *   observar       → solo se muestra
+ * Además se cargan los diferidos de OTRAS lecciones cuyo propietario es esta.
+ * La tabla falla en suave: sin la migración 005, todo queda como observación.
+ */
+async function prepararFueraDeAlcance(ctx: ContextoFlujo, s: Estado): Promise<{ aCorregir: ErrorSenalado[]; nota: string }> {
+  const sesion = s.sesion!;
+  const vistas = new Set<string>();
+  const observaciones = (sesion.requisitos_etapa.observaciones_acumuladas ?? []).filter(esErrorReal).filter((o) => {
+    const clave = `${o.fragmento}→${o.correccion}`;
+    return vistas.has(clave) ? false : (vistas.add(clave), true);
+  });
+  const estados = observaciones.some((o) => o.propietario) ? await ctx.repo.obtenerEstados(s.ai.id) : [];
+  const datos = { grafo: s.grafo, lecciones: s.lecciones, estados };
+
+  const aCorregir: ErrorSenalado[] = [];
+  const visibles: Array<{ fragmento: string; correccion: string; destino?: string }> = [];
+  const nuevos: ErrorDiferidoNuevo[] = [];
+  for (const o of observaciones) {
+    const propietario = o.propietario ?? null;
+    const tratamiento = clasificarFueraDeAlcance(propietario, datos);
+    const base = { indice: 0, fragmento: o.fragmento, correccion: o.correccion, explicacion: o.explicacion ?? "", causa: o.causa };
+    if (tratamiento === "corregir_ahora") {
+      aCorregir.push({ ...base, paso: "otra lección", tema: propietario! });
+    } else if (tratamiento === "diferir") {
+      nuevos.push({
+        alumno_idioma_id: s.ai.id,
+        propietario: propietario!,
+        unidad_origen: sesion.unidad_id,
+        fragmento: o.fragmento,
+        correccion: o.correccion,
+        explicacion: o.explicacion ?? "",
+        causa: o.causa ?? null,
+      });
+      visibles.push({ fragmento: o.fragmento, correccion: o.correccion, destino: propietario! });
+    } else {
+      visibles.push({ fragmento: o.fragmento, correccion: o.correccion });
+    }
+  }
+
+  const leccion = s.lecciones.find((l) => l.unidad_id === sesion.unidad_id);
+  try {
+    await ctx.repo.guardarErroresDiferidos(nuevos);
+    const pendientes = leccion ? await ctx.repo.obtenerErroresDiferidos(s.ai.id) : [];
+    for (const d of pendientes) {
+      if (d.unidad_origen === sesion.unidad_id || !perteneceA(leccion!, d.propietario) || !esErrorReal(d)) continue;
+      aCorregir.push({
+        indice: 0,
+        fragmento: d.fragmento,
+        correccion: d.correccion,
+        explicacion: d.explicacion,
+        causa: d.causa ?? undefined,
+        paso: `otra lección (${d.unidad_origen})`,
+        tema: d.propietario,
+        diferido_id: d.id,
+      });
+    }
+  } catch (e) {
+    const err = normalizarError(e);
+    await ctx.registro.registrar({
+      codigo: err.codigo,
+      severidad: "warning",
+      mensaje: `Corrección diferida no disponible (¿migración 005?): ${err.detalleTecnico}`,
+    });
+  }
+  return { aCorregir, nota: notaObservaciones(visibles) };
+}
+
+/** Borra de errores_diferidos los que el alumno ya corrigió (fallo suave). */
+async function saldarDiferidos(ctx: ContextoFlujo, errores: ErrorSenalado[]): Promise<void> {
+  const ids = errores.map((e) => e.diferido_id).filter((id): id is string => !!id);
+  if (ids.length === 0) return;
+  try {
+    await ctx.repo.borrarErroresDiferidos(ids);
+  } catch (e) {
+    const err = normalizarError(e);
+    await ctx.registro.registrar({ codigo: err.codigo, severidad: "warning", mensaje: `No se borraron errores diferidos: ${err.detalleTecnico}` });
+  }
+}
+
 async function entregarCorreccion(ctx: ContextoFlujo, s: Estado, paso: PasoPlan): Promise<RespuestaFlujo> {
   const sesion = s.sesion!;
-  const errores = sesion.requisitos_etapa.errores_acumulados ?? [];
+  const acumulados = sesion.requisitos_etapa.errores_acumulados ?? [];
+  const delObjetivo = acumulados.filter(esErrorReal); // cambio 18: acumulados antes del filtro
+  // MC-001 §7.5: se suman los fuera del alcance que se corrigen aquí (ya estudiados o diferidos a esta lección).
+  const fuera = await prepararFueraDeAlcance(ctx, s);
+  const errores = [...delObjetivo, ...fuera.aCorregir];
+  const nota = fuera.nota;
+  if (delObjetivo.length < acumulados.length) {
+    await ctx.registro.registrar({
+      codigo: 203,
+      severidad: "warning",
+      mensaje: `Se descartaron ${acumulados.length - delObjetivo.length} errores acumulados con corrección idéntica al fragmento`,
+    });
+  }
   const siguiente = siguientePaso(ctx.mc.leccion.plan_ejecucion.pasos, paso);
   if (!siguiente) throw new ErrorApp(598, `El paso de corrección ${paso.paso} no tiene sucesor`);
 
@@ -2513,7 +3179,7 @@ async function entregarCorreccion(ctx: ContextoFlujo, s: Estado, paso: PasoPlan)
     const r = await entregarPaso(ctx, s);
     return {
       ...r,
-      mensaje_sistema: ["Étape 17: no hubo errores dentro del alcance que corregir.", r.mensaje_sistema].filter(Boolean).join(" "),
+      mensaje_sistema: ["Étape 17: no hubo errores que corregir.", nota, r.mensaje_sistema].filter(Boolean).join(" "),
     };
   }
 
@@ -2523,7 +3189,7 @@ async function entregarCorreccion(ctx: ContextoFlujo, s: Estado, paso: PasoPlan)
     tarea: { tipo: "corregir", paso, errores: senalados },
     mensaje: MENSAJE_CONTINUAR,
     imagenes: [],
-    esquema: SalidaMensajeSchema,
+    contrato: CONTRATO_MENSAJE,
     maxTokens: INFRA.MAX_TOKENS_PRESENTACION,
     temperatura: 0.3,
   });
@@ -2535,11 +3201,12 @@ async function entregarCorreccion(ctx: ContextoFlujo, s: Estado, paso: PasoPlan)
       estado_paso: "esperando_correccion",
       errores_senalados: senalados,
       ultimo_mensaje_agente: salida.mensaje_para_alumno,
+      ultimo_mensaje_sistema: `Corrección de las étapes 15 y 16 (se exige el 100 %). ${listaPendientes(senalados)}`,
     },
   });
   return {
     mensaje_agente: salida.mensaje_para_alumno,
-    mensaje_sistema: `Corrección de las étapes 15 y 16: ${senalados.length} error(es). Reescribe cada uno; se exige el 100% para continuar.`,
+    mensaje_sistema: [`Corrección de las étapes 15 y 16 (se exige el 100 %). ${listaPendientes(senalados)}`, nota].filter(Boolean).join(" "),
     resultado: "requiere_correccion",
     estado: estadoPublico(s.sesion),
   };
@@ -2676,19 +3343,25 @@ interface OpcionesLLM<T> {
   tarea: Tarea;
   mensaje: string;
   imagenes: ImagenEntrada[];
-  esquema: Parameters<typeof parsearSalida<T>>[0];
+  contrato: Contrato<T>;
   maxTokens: number;
   temperatura: number;
+  /** Comprobación adicional del contenido; devuelve el problema o null. Se repara como un fallo de contrato. */
+  validar?: (salida: T) => string | null;
 }
 
+/**
+ * Llama al LLM y valida su respuesta contra el contrato.
+ * Si falla (203), se hace UN segundo intento, según el tipo de fallo (cambio 3):
+ *   cortada  → se repite desde cero con el doble de espacio (hasta MAX_TOKENS_TOPE)
+ *   ilegible → no era JSON (p. ej. un modelo clasificador): se repite desde cero
+ *   contrato → JSON con campos mal: se le devuelve al modelo con los errores exactos
+ * Las imágenes no se reenvían al reparar un contrato: el modelo ya las analizó.
+ * Si el segundo intento también falla, se lanza el 203 y la sesión no se toca.
+ */
 async function llamarLLM<T>(ctx: ContextoFlujo, s: Estado, livrable: string, o: OpcionesLLM<T>): Promise<T> {
-  const limite = await conRedis(ctx, (a) => a.verificarLimiteGlobalLLM(), { permitido: true, reintentarEnSeg: 0 });
-  if (!limite.permitido) {
-    throw new ErrorApp(430, "Tope diario global de llamadas al LLM alcanzado", { reintentar_en_seg: limite.reintentarEnSeg });
-  }
-
   const unidad = s.lecciones.find((l) => l.unidad_id === s.sesion!.unidad_id);
-  const peticion: PeticionLLM = {
+  const base: PeticionLLM = {
     sistema: {
       estatico: bloqueEstatico(ctx.mc, INFRA.IDIOMA_INTERFAZ),
       contexto: bloqueContexto(
@@ -2701,24 +3374,142 @@ async function llamarLLM<T>(ctx: ContextoFlujo, s: Estado, livrable: string, o: 
     imagenes: o.imagenes,
     maxTokens: o.maxTokens,
     temperatura: o.temperatura,
+    formato: { nombre: o.contrato.nombre, esquema: o.contrato.json },
+  };
+  let ultimoTexto = "";
+
+  const intentar = async (peticion: PeticionLLM, intento: number, llm?: ProveedorLLM): Promise<T> => {
+    const r = await generarYRegistrar(ctx, peticion, o, intento, llm);
+    ultimoTexto = r.texto;
+    const info = { tarea: o.tarea.tipo, proveedor: r.proveedor, modelo: r.modelo, intento };
+    if (r.cortada) {
+      throw new ErrorApp(203, `Respuesta cortada por el límite de ${peticion.maxTokens} tokens`, { ...info, tipo_fallo: "cortada" });
+    }
+    const salida = parsearSalida(o.contrato.zod, r.texto, info);
+    const problema = o.validar?.(salida);
+    if (problema) {
+      throw new ErrorApp(203, `JSON fuera de contrato: ${problema}`, { ...info, tipo_fallo: "contrato", fragmento: r.texto.slice(0, 300) });
+    }
+    const sospechosos = camposSospechosos(r.texto);
+    if (sospechosos.length) {
+      await ctx.registro.registrar({
+        codigo: 203,
+        severidad: "warning",
+        mensaje: `Posible corte del proveedor: texto de exactamente 4096 caracteres en ${sospechosos.join(", ")}`,
+        contexto: info,
+      });
+    }
+    return salida;
   };
 
-  const llm = ctx.obtenerLLM();
+  let fallo: ErrorApp;
+  try {
+    return await intentar(base, 1);
+  } catch (e) {
+    if (!(e instanceof ErrorApp) || !REINTENTABLES.has(e.codigo)) throw e;
+    fallo = e;
+  }
+
+  // Fallos pasajeros del proveedor (saturación, tiempo agotado, error del
+  // proveedor): una pausa y se repite la MISMA petición, una sola vez, con el
+  // modelo de respaldo si lo hay (cambio 11). Si el proveedor avisó saturación,
+  // la pausa es más larga (cambio 12).
+  if (fallo.codigo !== 203) {
+    const saturado = fallo.codigo === 202 || fallo.contexto.http === 503;
+    const respaldo = await obtenerRespaldo(ctx);
+    const pausaMs = saturado ? INFRA.PAUSA_SATURACION_MS : INFRA.PAUSA_REINTENTO_MS;
+    await ctx.registro.registrar({
+      codigo: fallo.codigo,
+      severidad: "warning",
+      mensaje: `Segundo intento tras fallo pasajero: ${fallo.detalleTecnico}`,
+      contexto: { ...fallo.contexto, saturado, pausa_ms: pausaMs, modelo_segundo_intento: respaldo?.modelo ?? "el mismo" },
+    });
+    await (ctx.pausa ?? esperar)(pausaMs);
+    return await intentar(base, 2, respaldo ?? undefined);
+  }
+
+  const tipo = fallo.contexto.tipo_fallo;
+  await ctx.registro.registrar({
+    codigo: 203,
+    severidad: "warning",
+    mensaje: `Segundo intento (${tipo ?? "respuesta vacía"}): ${fallo.detalleTecnico}`,
+    contexto: fallo.contexto,
+  });
+
+  let segunda: PeticionLLM;
+  if (tipo === "cortada") {
+    segunda = { ...base, maxTokens: Math.min(base.maxTokens * 2, INFRA.MAX_TOKENS_TOPE) };
+  } else if (tipo === "contrato" && ultimoTexto.trim() !== "") {
+    segunda = {
+      ...base,
+      imagenes: [],
+      mensajeUsuario: o.imagenes.length
+        ? `${o.mensaje}\n(Las imágenes ya las analizaste en tu respuesta anterior.)`
+        : o.mensaje,
+      historial: [
+        { rol: "assistant", texto: ultimoTexto },
+        {
+          rol: "user",
+          texto: `Tu respuesta anterior no cumple el formato obligatorio: ${fallo.detalleTecnico}. ` +
+            `Devuelve SOLO el objeto JSON completo y corregido, con exactamente los campos del formato de la TAREA, sin texto adicional.`,
+        },
+      ],
+    };
+  } else {
+    segunda = { ...base }; // no era JSON o llegó vacía: se repite desde cero
+  }
+  return await intentar(segunda, 2);
+}
+
+/**
+ * Códigos con derecho a UN segundo intento: 203 (formato) y los fallos pasajeros
+ * del proveedor 202 (saturado), 204 (tiempo agotado) y 206 (error del proveedor).
+ * Nunca se reintentan 201 (clave), 205 (configuración), 207 (sin crédito) ni 430.
+ */
+const REINTENTABLES = new Set<number>([202, 203, 204, 206]);
+
+const esperar = (ms: number) => new Promise<void>((resuelve) => setTimeout(resuelve, ms));
+
+/** El respaldo nunca debe impedir el segundo intento: si no se puede crear, se usa el principal. */
+async function obtenerRespaldo(ctx: ContextoFlujo): Promise<ProveedorLLM | null> {
+  try {
+    return ctx.obtenerLLMRespaldo?.() ?? null;
+  } catch (e) {
+    const err = normalizarError(e);
+    await ctx.registro.registrar({ codigo: err.codigo, severidad: "warning", mensaje: `Sin modelo de respaldo: ${err.detalleTecnico}` });
+    return null;
+  }
+}
+
+/** Una llamada real: respeta el tope diario global y registra el uso (código 900). */
+async function generarYRegistrar<T>(
+  ctx: ContextoFlujo,
+  peticion: PeticionLLM,
+  o: OpcionesLLM<T>,
+  intento: number,
+  elegido?: ProveedorLLM,
+) {
+  const llm = elegido ?? ctx.obtenerLLM();
+  const limite = await conRedis(ctx, (a) => a.verificarLimiteGlobalLLM(), { permitido: true, reintentarEnSeg: 0 });
+  if (!limite.permitido) {
+    throw new ErrorApp(430, "Tope diario global de llamadas al LLM alcanzado", { reintentar_en_seg: limite.reintentarEnSeg });
+  }
   const respuesta = await llm.generar(peticion);
   if (INFRA.REGISTRAR_USO_LLM) {
     await ctx.registro.registrar({
       codigo: 900,
       contexto: {
         tarea: o.tarea.tipo,
+        intento,
         proveedor: respuesta.proveedor,
         modelo: respuesta.modelo,
         uso: respuesta.uso,
         latencia_ms: respuesta.latenciaMs,
-        imagenes: o.imagenes.length,
+        imagenes: peticion.imagenes.length,
       },
     });
   }
-  return parsearSalida(o.esquema, respuesta.texto, { tarea: o.tarea.tipo, proveedor: respuesta.proveedor, modelo: respuesta.modelo });
+  return respuesta;
 }
 
 async function subirImagenes(ctx: ContextoFlujo, s: Estado, imagenes: ImagenEntrada[]): Promise<string[]> {
@@ -2798,6 +3589,29 @@ function parametrosMotor(mc: McOperacional): ParametrosMotor {
   };
 }
 
+/** Cambio 5: comprueba que llegaron exactamente las étapes del paso, sin faltantes ni duplicadas. */
+function faltanEtapes(secciones: Seccion[], esperadas: number[]): string | null {
+  const recibidas = secciones.map((x) => x.etapa);
+  const faltan = esperadas.filter((n) => !recibidas.includes(n));
+  const sobran = recibidas.filter((n) => !esperadas.includes(n));
+  const repetidas = recibidas.filter((n, i) => recibidas.indexOf(n) !== i);
+  const problemas = [
+    faltan.length ? `faltan las étapes ${faltan.join(", ")} en «secciones»` : "",
+    sobran.length ? `sobran las étapes ${sobran.join(", ")}` : "",
+    repetidas.length ? `étapes repetidas: ${repetidas.join(", ")}` : "",
+  ].filter(Boolean);
+  return problemas.length ? problemas.join("; ") : null;
+}
+
+function ordenarSecciones(secciones: Seccion[], esperadas: number[]): Seccion[] {
+  return esperadas.map((n) => secciones.find((x) => x.etapa === n)!).filter(Boolean);
+}
+
+/** Texto completo de la presentación (para guardar y para clientes que no usan las secciones). */
+function componerPresentacion(secciones: Seccion[], cierre: string): string {
+  return [...secciones.map((x) => `## Étape ${x.etapa} — ${x.titulo}\n\n${x.texto}`), cierre].filter((x) => x.trim()).join("\n\n");
+}
+
 /** Mientras se recoge producción con corrección diferida, la étape 17 está en su fase 1. */
 function faseDe(paso: PasoPlan): Sesion["fase_correccion"] {
   return paso.tipo === "produccion" && paso.correccion === "diferida" ? "collecte_evidence" : null;
@@ -2853,6 +3667,7 @@ export function estadoPublico(sesion: Sesion): EstadoPublico {
     paso: req.paso,
     fase,
     niveles: req.estado_paso === "esperando_evidencia" ? req.niveles : undefined,
+    enunciado: req.estado_paso === "esperando_evidencia" ? req.enunciado : undefined,
     errores_pendientes: req.estado_paso === "esperando_correccion" ? req.errores_senalados?.length : undefined,
     bloqueo: req.bloqueo,
   };
@@ -2872,6 +3687,7 @@ const VERSION_API = "2023-06-01";
 
 interface RespuestaAnthropic {
   model?: string;
+  stop_reason?: string;
   content?: Array<{ type: string; text?: string }>;
   usage?: {
     input_tokens?: number;
@@ -2924,9 +3740,14 @@ export class ProveedorClaude implements ProveedorLLM {
         max_tokens: p.maxTokens,
         temperature: p.temperatura,
         system: sistema,
-        messages: [{ role: "user", content: contenido }],
+        // El esquema (p.formato) no se envía a Claude: su formato se exige por
+        // instrucciones, con el reintento de reparación como red de seguridad.
+        messages: [
+          { role: "user", content: contenido },
+          ...(p.historial ?? []).map((h) => ({ role: h.rol, content: h.texto })),
+        ],
       }),
-    }, this.timeoutMs, this.nombre);
+    }, this.timeoutMs, this.nombre, this.modelo);
 
     if (!res.ok) {
       throw new ErrorApp(codigoPorHttp(res.status), `claude HTTP ${res.status}: ${await detalleError(res)}`, {
@@ -2942,10 +3763,22 @@ export class ProveedorClaude implements ProveedorLLM {
       .map((b) => b.text!)
       .join("\n")
       .trim();
-    if (!texto) throw new ErrorApp(203, "claude devolvió una respuesta sin texto", { proveedor: this.nombre });
+    if (!texto) {
+      const cortada = datos.stop_reason === "max_tokens";
+      throw new ErrorApp(203, cortada ? `claude agotó el límite de ${p.maxTokens} tokens sin escribir texto` : "claude devolvió una respuesta sin texto", {
+        proveedor: this.nombre,
+        modelo: datos.model ?? this.modelo,
+        finish_reason: datos.stop_reason ?? null,
+        tokens_entrada: datos.usage?.input_tokens ?? null,
+        tokens_salida: datos.usage?.output_tokens ?? null,
+        limite_tokens: p.maxTokens,
+        ...(cortada ? { tipo_fallo: "cortada" } : {}),
+      });
+    }
 
     return {
       texto,
+      cortada: datos.stop_reason === "max_tokens",
       proveedor: this.nombre,
       modelo: datos.model ?? this.modelo,
       uso: {
@@ -2959,33 +3792,65 @@ export class ProveedorClaude implements ProveedorLLM {
   }
 }
 
-// ───────────── llm_openrouter.ts ─────────────
-// llm_openrouter.ts — Adapter para OpenRouter (API compatible con OpenAI).
+// ───────────── llm_gemini.ts ─────────────
+// llm_gemini.ts — Adapter para la API de Gemini (Google AI Studio), llamada directa.
 //
-// Con el modelo "openrouter/free", OpenRouter elige en cada llamada un modelo
-// gratuito compatible con la petición (imágenes, salida JSON...). Por eso se
-// registra el modelo que REALMENTE respondió: si un modelo gratuito devuelve
-// JSON roto, el registro dice cuál fue.
+// ⚠ SOLO PARA PRUEBAS DEL DESARROLLADOR. Los términos de la API de Gemini
+// exigen 18 años o más y prohíben usarla en apps dirigidas a menores o con
+// probabilidad de ser usadas por menores; además, el plan gratuito usa los
+// datos para mejorar los productos de Google. C-Method admite alumnos de 13 a
+// 17 años y su Aviso de Privacidad nombra a Anthropic: en producción,
+// LLM_PROVIDER = claude.
+//
+// Formato verificado contra los tipos del SDK oficial @google/genai 2.32.0:
+//   POST https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent
+//   cabecera x-goog-api-key; generationConfig.{maxOutputTokens, responseMimeType,
+//   responseJsonSchema, thinkingConfig.thinkingLevel}; respuesta con
+//   candidates[0].{content.parts[], finishReason} y usageMetadata.
+//
+// Decisiones (J. Good, 02/11/2026):
+//   - un solo modelo para texto y fotos (gemini-3.8-flash lee imágenes);
+//   - razonamiento al mínimo que admite el modelo: el límite de salida INCLUYE
+//     los tokens de razonamiento, y razonar de más deja la respuesta vacía;
+//   - sin temperatura: Google recomienda el valor por defecto en Gemini 3.
 
 
-const URL_OPENROUTER = "https://openrouter.ai/api/v1/chat/completions";
+const URL_GEMINI = "https://generativelanguage.googleapis.com/v1beta/models";
 
-interface RespuestaOpenRouter {
-  model?: string;
-  choices?: Array<{ message?: { content?: string | null } }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
-  error?: { code?: number | string; message?: string };
+export type NivelRazonamiento = "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
+
+interface RespuestaGemini {
+  modelVersion?: string;
+  candidates?: Array<{
+    content?: { parts?: Array<{ text?: string; thought?: boolean }> };
+    finishReason?: string;
+  }>;
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
+  promptFeedback?: { blockReason?: string };
 }
 
-export class ProveedorOpenRouter implements ProveedorLLM {
-  readonly nombre = "openrouter";
+/**
+ * Adapta nuestros esquemas al subconjunto de JSON Schema que Gemini documenta:
+ * los tipos en lista (["integer","null"]) se convierten en anyOf, que sí figura
+ * entre las palabras clave admitidas. El resto pasa sin cambios.
+ */
+export function esquemaParaGemini(nodo: unknown): unknown {
+  if (Array.isArray(nodo)) return nodo.map(esquemaParaGemini);
+  if (!nodo || typeof nodo !== "object") return nodo;
+  const { type, ...resto } = nodo as Record<string, unknown>;
+  const convertido = Object.fromEntries(Object.entries(resto).map(([k, v]) => [k, esquemaParaGemini(v)]));
+  if (Array.isArray(type)) return { ...convertido, anyOf: type.map((t) => ({ type: t })) };
+  return type === undefined ? convertido : { type, ...convertido };
+}
+
+export class ProveedorGemini implements ProveedorLLM {
+  readonly nombre = "gemini";
 
   constructor(
     private readonly apiKey: string,
     readonly modelo: string,
     private readonly timeoutMs: number,
-    private readonly usarModoJson: boolean,
-    private readonly urlSitio?: string,
+    private readonly nivelRazonamiento: NivelRazonamiento,
   ) {}
 
   async generar(p: PeticionLLM): Promise<RespuestaLLM> {
@@ -2993,101 +3858,151 @@ export class ProveedorOpenRouter implements ProveedorLLM {
       .filter((t) => t.trim() !== "")
       .join("\n\n");
 
-    const contenidoUsuario = p.imagenes.length === 0 ? p.mensajeUsuario : [
-      { type: "text", text: p.mensajeUsuario },
-      ...p.imagenes.map((img) => ({
-        type: "image_url",
-        image_url: { url: `data:${img.mediaType};base64,${img.base64}` },
-      })),
+    const contents = [
+      {
+        role: "user",
+        parts: [
+          ...p.imagenes.map((img) => ({ inlineData: { mimeType: img.mediaType, data: img.base64 } })),
+          { text: p.mensajeUsuario },
+        ],
+      },
+      // Reparación de formato: el turno del modelo se llama "model" en Gemini.
+      ...(p.historial ?? []).map((h) => ({ role: h.rol === "assistant" ? "model" : "user", parts: [{ text: h.texto }] })),
     ];
 
-    const cabeceras: Record<string, string> = {
-      "content-type": "application/json",
-      "authorization": `Bearer ${this.apiKey}`,
-      "x-title": "Metodo Chatito",
-    };
-    if (this.urlSitio) cabeceras["http-referer"] = this.urlSitio;
-
     const inicio = performance.now();
-    const res = await fetchConLimite(URL_OPENROUTER, {
+    const res = await fetchConLimite(`${URL_GEMINI}/${encodeURIComponent(this.modelo)}:generateContent`, {
       method: "POST",
-      headers: cabeceras,
+      headers: { "content-type": "application/json", "x-goog-api-key": this.apiKey },
       body: JSON.stringify({
-        model: this.modelo,
-        max_tokens: p.maxTokens,
-        temperature: p.temperatura,
-        messages: [
-          { role: "system", content: sistema },
-          { role: "user", content: contenidoUsuario },
-        ],
-        ...(this.usarModoJson ? { response_format: { type: "json_object" } } : {}),
+        systemInstruction: { parts: [{ text: sistema }] },
+        contents,
+        generationConfig: {
+          maxOutputTokens: p.maxTokens,
+          responseMimeType: "application/json",
+          ...(p.formato ? { responseJsonSchema: esquemaParaGemini(p.formato.esquema) } : {}),
+          thinkingConfig: { thinkingLevel: this.nivelRazonamiento },
+        },
       }),
-    }, this.timeoutMs, this.nombre);
+    }, this.timeoutMs, this.nombre, this.modelo);
 
     if (!res.ok) {
-      throw new ErrorApp(codigoPorHttp(res.status), `openrouter HTTP ${res.status}: ${await detalleError(res)}`, {
+      throw new ErrorApp(codigoPorHttp(res.status), `gemini HTTP ${res.status}: ${await detalleError(res)}`, {
         proveedor: this.nombre,
         modelo: this.modelo,
         http: res.status,
+        ...(res.status === 404 ? { revisar: `¿existe el modelo "${this.modelo}"? (LLM_MODEL o LLM_MODEL_RESPALDO)` } : {}),
       });
     }
 
-    const datos = (await res.json()) as RespuestaOpenRouter;
-    // OpenRouter puede responder 200 con un error del proveedor subyacente.
-    if (datos.error) {
-      const codigoNum = Number(datos.error.code);
-      throw new ErrorApp(
-        Number.isFinite(codigoNum) ? codigoPorHttp(codigoNum) : 206,
-        `openrouter error: ${datos.error.message ?? "sin mensaje"}`,
-        { proveedor: this.nombre, modelo: datos.model ?? this.modelo },
-      );
-    }
+    const datos = (await res.json()) as RespuestaGemini;
+    const candidato = datos.candidates?.[0];
+    const finishReason = candidato?.finishReason ?? null;
+    // Las partes de razonamiento (thought: true) nunca forman parte de la respuesta.
+    const texto = (candidato?.content?.parts ?? [])
+      .filter((x) => !x.thought && typeof x.text === "string")
+      .map((x) => x.text!)
+      .join("")
+      .trim();
+    const cortada = finishReason === "MAX_TOKENS";
+    const uso = {
+      entrada: datos.usageMetadata?.promptTokenCount,
+      salida: datos.usageMetadata?.candidatesTokenCount,
+      razonamiento: datos.usageMetadata?.thoughtsTokenCount,
+    };
 
-    const texto = (datos.choices?.[0]?.message?.content ?? "").trim();
     if (!texto) {
-      throw new ErrorApp(203, "openrouter devolvió una respuesta vacía", {
-        proveedor: this.nombre,
-        modelo: datos.model ?? this.modelo,
-      });
+      const bloqueo = datos.promptFeedback?.blockReason ?? null;
+      throw new ErrorApp(
+        203,
+        bloqueo
+          ? `gemini bloqueó la petición (${bloqueo})`
+          : cortada
+          ? `gemini devolvió una respuesta vacía: el límite de ${p.maxTokens} tokens se agotó antes de escribir (probablemente en razonamiento)`
+          : `gemini devolvió una respuesta vacía (${finishReason ?? "sin motivo"})`,
+        {
+          proveedor: this.nombre,
+          modelo: datos.modelVersion ?? this.modelo,
+          finish_reason: finishReason,
+          bloqueo,
+          tokens_entrada: uso.entrada ?? null,
+          tokens_salida: uso.salida ?? null,
+          tokens_razonamiento: uso.razonamiento ?? null,
+          limite_tokens: p.maxTokens,
+          ...(cortada ? { tipo_fallo: "cortada" } : {}),
+        },
+      );
     }
 
     return {
       texto,
+      cortada,
       proveedor: this.nombre,
-      modelo: datos.model ?? this.modelo,
-      uso: { entrada: datos.usage?.prompt_tokens, salida: datos.usage?.completion_tokens },
+      modelo: datos.modelVersion ?? this.modelo,
+      uso,
       latenciaMs: Math.round(performance.now() - inicio),
     };
   }
 }
 
 // ───────────── llm_fabrica.ts ─────────────
-// llm_fabrica.ts — El único lugar que decide qué proveedor se usa.
-//   LLM_PROVIDER = "openrouter" | "claude"
-//   LLM_MODEL    = (opcional) sobrescribe el modelo por defecto
+// llm_fabrica.ts — El único lugar que decide qué proveedor y qué modelos se usan.
+//   LLM_PROVIDER       = "gemini" (pruebas del desarrollador) | "claude" (producción)
+//   LLM_MODEL          = (opcional) sobrescribe el modelo principal del proveedor
+//   LLM_MODEL_RESPALDO = (opcional) modelo del segundo intento tras saturación o
+//                        tiempo agotado; "ninguno" lo desactiva (cambio 11)
+//
+// Cambiar de proveedor = cambiar LLM_PROVIDER y su clave; ninguna otra línea.
 
 
+/** Proveedor con el modelo principal. */
 export function crearProveedor(): ProveedorLLM {
-  const proveedor = (secretOpcional("LLM_PROVIDER") ?? "").toLowerCase();
-  const modelo = secretOpcional("LLM_MODEL");
+  const proveedor = leerProveedor();
+  return construir(proveedor, secretOpcional("LLM_MODEL") ?? modeloPorDefecto(proveedor));
+}
 
+/**
+ * Proveedor con el modelo de respaldo, o null si no hay (o es igual al principal).
+ * Mismo proveedor y misma clave: solo cambia el modelo.
+ */
+export function crearProveedorRespaldo(): ProveedorLLM | null {
+  const proveedor = leerProveedor();
+  const principal = secretOpcional("LLM_MODEL") ?? modeloPorDefecto(proveedor);
+  const modelo = elegirModeloRespaldo(proveedor, principal, secretOpcional("LLM_MODEL_RESPALDO"));
+  return modelo ? construir(proveedor, modelo) : null;
+}
+
+/** Regla pura (probada sin secrets): qué modelo de respaldo corresponde. */
+export function elegirModeloRespaldo(proveedor: string, principal: string, pedido: string | undefined): string | null {
+  if (pedido?.trim().toLowerCase() === "ninguno") return null;
+  // Claude no trae respaldo por defecto: en producción se decidirá cuál conviene.
+  const modelo = pedido?.trim() || (proveedor === "gemini" ? INFRA.MODELO_GEMINI_RESPALDO : null);
+  return modelo && modelo !== principal ? modelo : null;
+}
+
+function leerProveedor(): string {
+  return (secretOpcional("LLM_PROVIDER") ?? "").toLowerCase();
+}
+
+function modeloPorDefecto(proveedor: string): string {
+  if (proveedor === "gemini") return INFRA.MODELO_GEMINI_POR_DEFECTO;
+  if (proveedor === "claude") return INFRA.MODELO_CLAUDE_POR_DEFECTO;
+  throw new ErrorApp(205, `LLM_PROVIDER inválido o ausente: "${proveedor}" (usa "gemini" o "claude")`);
+}
+
+function construir(proveedor: string, modelo: string): ProveedorLLM {
   switch (proveedor) {
+    case "gemini":
+      return new ProveedorGemini(
+        claveObligatoria("GEMINI_API_KEY"),
+        modelo,
+        INFRA.TIMEOUT_LLM_MS,
+        INFRA.NIVEL_RAZONAMIENTO_GEMINI,
+      );
     case "claude":
-      return new ProveedorClaude(
-        claveObligatoria("ANTHROPIC_API_KEY"),
-        modelo ?? INFRA.MODELO_CLAUDE_POR_DEFECTO,
-        INFRA.TIMEOUT_LLM_MS,
-      );
-    case "openrouter":
-      return new ProveedorOpenRouter(
-        claveObligatoria("OPENROUTER_API_KEY"),
-        modelo ?? INFRA.MODELO_OPENROUTER_POR_DEFECTO,
-        INFRA.TIMEOUT_LLM_MS,
-        (secretOpcional("OPENROUTER_MODO_JSON") ?? "true") !== "false",
-        secretOpcional("SITIO_URL"),
-      );
+      return new ProveedorClaude(claveObligatoria("ANTHROPIC_API_KEY"), modelo, INFRA.TIMEOUT_LLM_MS);
     default:
-      throw new ErrorApp(205, `LLM_PROVIDER inválido o ausente: "${proveedor}" (usa "openrouter" o "claude")`);
+      throw new ErrorApp(205, `LLM_PROVIDER inválido o ausente: "${proveedor}" (usa "gemini" o "claude")`);
   }
 }
 
@@ -3134,7 +4049,7 @@ export class ServiciosRedis {
     });
     this.limiteGlobal = new Ratelimit({
       redis,
-      limiter: Ratelimit.fixedWindow(INFRA.LIMITE_GLOBAL_LLM_DIARIO, "1 d"),
+      limiter: Ratelimit.fixedWindow(limiteGlobalDiario(), "1 d"),
       prefix: `${PREFIJO}:rl:global`,
       analytics: false,
     });
@@ -3246,6 +4161,11 @@ async function diagnostico(repo: Repositorio, redis: ServiciosRedis | null, usua
   try {
     const llm = crearProveedor();
     resultado.proveedor = { nombre: llm.nombre, modelo: llm.modelo };
+    resultado.modelo_respaldo = crearProveedorRespaldo()?.modelo ?? "ninguno";
+    resultado.limite_diario_llm = limiteGlobalDiario();
+    if (llm.nombre === "gemini") {
+      resultado.aviso = "Gemini gratis es SOLO para pruebas: sus términos prohíben apps para menores y el plan gratuito usa los datos. En producción, LLM_PROVIDER = claude.";
+    }
     if (probarLlm) {
       if (redis) {
         const lim = await redis.verificarLimiteGlobalLLM().catch(() => ({ permitido: true, reintentarEnSeg: 0 }));
@@ -3255,7 +4175,7 @@ async function diagnostico(repo: Repositorio, redis: ServiciosRedis | null, usua
         sistema: { estatico: 'Responde exactamente con {"ok": true}', contexto: "", dinamico: "" },
         mensajeUsuario: "ping",
         imagenes: [],
-        maxTokens: 20,
+        maxTokens: 1000, // margen para el razonamiento, que cuenta dentro del límite
         temperatura: 0,
       });
       resultado.prueba_llm = { ok: true, modelo_real: r.modelo, latencia_ms: r.latenciaMs };
@@ -3335,6 +4255,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         registro,
         auxiliares: redis,
         obtenerLLM: crearProveedor, // perezoso: retomar una sesión no necesita IA
+        obtenerLLMRespaldo: crearProveedorRespaldo, // solo se crea si el primer intento falla
         mc: MC,
         grafos: GRAFOS,
         usuarioId: usuario.id,

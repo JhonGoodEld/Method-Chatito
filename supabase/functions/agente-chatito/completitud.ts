@@ -40,6 +40,61 @@ export function evaluarProduccion(niveles: EntregaNivel[], factor: number): Resu
   return { cumple: detalle.every((d) => d.cumple), detalle };
 }
 
+/**
+ * Cambio 15: palabras contadas por el código, no por la IA (que se equivocaba ±10).
+ * Ignora lo que va entre corchetes (marcas como «[ilegible]») y los signos sueltos.
+ */
+export function contarPalabras(texto: string): number {
+  return texto
+    .replace(/\[[^\]]*\]/g, " ")
+    .split(/\s+/)
+    .filter((t) => /[\p{L}\p{N}]/u.test(t))
+    .length;
+}
+
+/**
+ * Cambio 15: un paso de un solo nivel medido en palabras es UN texto (étape 16):
+ * cada entrega es el texto completo y reemplaza a la anterior.
+ */
+export function esTextoUnico(niveles: Array<{ unidad_medida: string }> | undefined): boolean {
+  return niveles?.length === 1 && niveles[0].unidad_medida === "palabras";
+}
+
+/**
+ * Cambio 18: un «error» cuya corrección es idéntica al fragmento no es un error.
+ * Solo se ignoran los espacios y la puntuación de los extremos; las mayúsculas
+ * SÍ cuentan («i mean» → «I mean» es un error real en inglés).
+ */
+export function esErrorReal(e: { fragmento: string; correccion: string }): boolean {
+  const limpiar = (t: string) =>
+    t.normalize("NFC").replace(/\s+/g, " ").trim().replace(/^[\p{P}\s]+|[\p{P}\s]+$/gu, "");
+  return limpiar(e.fragmento) !== limpiar(e.correccion);
+}
+
+/** Cambio 17: la lista de pendientes la arma el código, completa y numerada. */
+export function listaPendientes(errores: Array<{ indice: number; fragmento: string; tema?: string }>): string {
+  const item = (e: { indice: number; fragmento: string; tema?: string }) =>
+    `[${e.indice}] «${e.fragmento}»${e.tema ? ` (tema ${e.tema})` : ""}`;
+  return `Pendientes (${errores.length}): ${errores.map(item).join(" · ")}. Reescribe cada uno.`;
+}
+
+/**
+ * Cambio 19: errores fuera del alcance, mostrados sin evaluar ni exigir reescritura.
+ * Sin duplicados; como mucho `max` para no saturar al alumno.
+ */
+export function notaObservaciones(obs: Array<{ fragmento: string; correccion: string; destino?: string }>, max = 10): string {
+  const vistos = new Set<string>();
+  const unicas = obs.filter((o) => {
+    const clave = `${o.fragmento}→${o.correccion}`;
+    return vistos.has(clave) ? false : (vistos.add(clave), true);
+  });
+  if (unicas.length === 0) return "";
+  const resto = unicas.length - max;
+  return `Además observé errores de otros temas (no se evalúan ni hay que reescribirlos): ` +
+    unicas.slice(0, max).map((o) => `«${o.fragmento}» → «${o.correccion}»${o.destino ? ` (se corregirá en ${o.destino})` : ""}`).join(" · ") +
+    (resto > 0 ? ` (+${resto} más)` : "") + ".";
+}
+
 /** 100% de lo señalado. Índices corregidos que no fueron señalados se ignoran. */
 export function evaluarCorreccion(
   indicesSenalados: number[],

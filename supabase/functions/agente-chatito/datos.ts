@@ -13,6 +13,8 @@ import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { secretObligatorio, secretOpcional } from "./config.ts";
 import { ErrorApp } from "./errores.ts";
 import type {
+  ErrorDiferido,
+  ErrorDiferidoNuevo,
   FilaEstadoUnidad,
   FilaEvidencia,
   FilaEvidenciaNueva,
@@ -32,6 +34,8 @@ export type CambiosSesion = Partial<Pick<Sesion, "unidad_id" | "etapa_actual" | 
 export interface Repositorio {
   obtenerAlumnoIdioma(id: string): Promise<AlumnoIdioma | null>;
   obtenerRolPerfil(usuarioId: string): Promise<string | null>;
+  /** true si el usuario aceptó el Aviso de Privacidad y los Términos (migración 004). */
+  consentimientoRegistrado(usuarioId: string): Promise<boolean>;
   obtenerSesion(alumnoIdiomaId: string): Promise<Sesion | null>;
   crearSesion(d: { alumno_idioma_id: string; unidad_id: string; etapa_actual: number; requisitos_etapa: Requisitos }): Promise<Sesion>;
   /** Compare-and-set sobre actualizado_en: si otra petición cambió la sesión → 105. */
@@ -50,6 +54,10 @@ export interface Repositorio {
   obtenerLecciones(idiomaCodigo: string): Promise<LeccionDeclarada[]>;
   obtenerContenidoLivrable(unidadId: string): Promise<string | null>;
   subirArchivo(ruta: string, bytes: Uint8Array, mediaType: string): Promise<void>;
+  /** Corrección diferida (migración 005). Insertar ignora duplicados. */
+  guardarErroresDiferidos(filas: ErrorDiferidoNuevo[]): Promise<void>;
+  obtenerErroresDiferidos(alumnoIdiomaId: string): Promise<ErrorDiferido[]>;
+  borrarErroresDiferidos(ids: string[]): Promise<void>;
   ping(): Promise<boolean>;
 }
 
@@ -109,6 +117,16 @@ export class RepositorioSupabase implements Repositorio {
     const { data, error } = await this.db.from("perfiles").select("rol").eq("id", usuarioId).maybeSingle();
     if (error) fallo(error, "leer perfil", false);
     return data?.rol ?? null;
+  }
+
+  async consentimientoRegistrado(usuarioId: string): Promise<boolean> {
+    const { data, error } = await this.db
+      .from("perfiles")
+      .select("declaracion_edad, terminos_aceptados_en")
+      .eq("id", usuarioId)
+      .maybeSingle();
+    if (error) fallo(error, "leer consentimiento", false);
+    return !!data?.declaracion_edad && !!data?.terminos_aceptados_en;
   }
 
   async obtenerSesion(alumnoIdiomaId: string): Promise<Sesion | null> {
@@ -184,6 +202,31 @@ export class RepositorioSupabase implements Repositorio {
       { onConflict: "alumno_idioma_id,unidad_id" },
     );
     if (error) fallo(error, "marcar acquis", true);
+  }
+
+  async guardarErroresDiferidos(filas: ErrorDiferidoNuevo[]): Promise<void> {
+    if (filas.length === 0) return;
+    const { error } = await this.db.from("errores_diferidos").upsert(filas, {
+      onConflict: "alumno_idioma_id,unidad_origen,fragmento,correccion",
+      ignoreDuplicates: true,
+    });
+    if (error) fallo(error, "guardar errores diferidos", true);
+  }
+
+  async obtenerErroresDiferidos(alumnoIdiomaId: string): Promise<ErrorDiferido[]> {
+    const { data, error } = await this.db
+      .from("errores_diferidos")
+      .select("*")
+      .eq("alumno_idioma_id", alumnoIdiomaId)
+      .order("creado_en", { ascending: true });
+    if (error) fallo(error, "leer errores diferidos", false);
+    return (data ?? []) as ErrorDiferido[];
+  }
+
+  async borrarErroresDiferidos(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const { error } = await this.db.from("errores_diferidos").delete().in("id", ids);
+    if (error) fallo(error, "borrar errores diferidos", true);
   }
 
   async insertarEvidencias(filas: FilaEvidenciaNueva[]): Promise<void> {

@@ -38,6 +38,7 @@ export const CATALOGO = {
   204: { nombre: "LLM_TIEMPO_AGOTADO", http: 504, severidad: "error", mensaje: "El agente tardó demasiado en responder. Intenta de nuevo." },
   205: { nombre: "LLM_NO_CONFIGURADO", http: 500, severidad: "critico", mensaje: "El agente no está configurado todavía." },
   206: { nombre: "LLM_ERROR_PROVEEDOR", http: 502, severidad: "error", mensaje: "El proveedor del agente falló. Intenta de nuevo." },
+  208: { nombre: "LLM_MODELO_NO_DISPONIBLE", http: 502, severidad: "critico", mensaje: "El agente no está disponible por un problema de configuración. Ya fue reportado." },
   207: { nombre: "LLM_SIN_CREDITO", http: 502, severidad: "critico", mensaje: "El agente no está disponible en este momento (cuota agotada)." },
 
   // ---------- 3xx Negocio y validación ----------
@@ -50,6 +51,7 @@ export const CATALOGO = {
   308: { nombre: "IDIOMA_SIN_GRAFO", http: 500, severidad: "critico", mensaje: "Este idioma aún no tiene su arquitectura cargada." },
   309: { nombre: "GRAFO_INCONSISTENTE", http: 500, severidad: "critico", mensaje: "Hay un problema con la estructura del curso. Ya fue reportado." },
   310: { nombre: "ACCION_NO_ESPERADA", http: 409, severidad: "info", mensaje: "En este momento no se espera una respuesta; pulsa «continuar»." },
+  313: { nombre: "CONSENTIMIENTO_PENDIENTE", http: 403, severidad: "info", mensaje: "Antes de empezar debes aceptar el Aviso de Privacidad y los Términos." },
   312: { nombre: "CONFIRMACION_REQUERIDA", http: 400, severidad: "info", mensaje: "Para eliminar tu cuenta debes confirmarlo explícitamente." },
   311: { nombre: "PETICION_EN_CURSO", http: 409, severidad: "info", mensaje: "Ya estamos procesando tu petición anterior. Espera un momento." },
 

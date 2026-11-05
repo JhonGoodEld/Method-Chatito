@@ -114,6 +114,8 @@ export interface ErrorDetectado {
   fuera_de_scope: boolean;
   unidad_relacionada: string | null;
   nivel: number | null;
+  /** Fuera del alcance: identificador del grafo dueño, según las fronteras del livrable (MC-001 §7.5). */
+  propietario?: string | null;
 }
 
 export type Intento = "inicial" | "complemento" | "correccion";
@@ -131,6 +133,10 @@ export interface MetricasEvidencia {
   errores_senalados?: number;
   errores_corregidos?: number;
   diagnostico_diferido?: boolean;
+  /** Cambio 13: condiciones de contenido de la étape 15 que reportó la IA. */
+  condiciones?: Array<{ nivel: number | null; condicion: string; cumple: boolean; detalle: string }>;
+  /** Cambio 15: quién contó total_entregado. */
+  conteo?: "codigo" | "ia";
   archivos?: string[];
 }
 
@@ -175,6 +181,36 @@ export interface ErrorSenalado {
   causa?: string;
   /** Paso de producción donde apareció el error. */
   paso?: string;
+  /** Error fuera del alcance de la lección (MC-001 §7.5): su propietario, para mostrarlo. */
+  tema?: string;
+  /** Fila de errores_diferidos que este error salda al corregirse. */
+  diferido_id?: string;
+}
+
+/** Fila de errores_diferidos (migración 005): solo pendientes; se borra al corregirse. */
+export interface ErrorDiferidoNuevo {
+  alumno_idioma_id: string;
+  propietario: string;
+  unidad_origen: string;
+  fragmento: string;
+  correccion: string;
+  explicacion: string;
+  causa: string | null;
+}
+export interface ErrorDiferido extends ErrorDiferidoNuevo {
+  id: string;
+  creado_en: string;
+}
+
+/** Cambio 19: error fuera del alcance de la lección; se muestra en la étape 17 sin evaluarse. */
+export interface Observacion {
+  fragmento: string;
+  correccion: string;
+  paso?: string;
+  /** Identificador del grafo dueño (MC-001 §7.5), ya normalizado; null si no tiene. */
+  propietario?: string | null;
+  explicacion?: string;
+  causa?: string;
 }
 
 export interface Requisitos {
@@ -186,7 +222,11 @@ export interface Requisitos {
   errores_senalados?: ErrorSenalado[];
   /** Errores de pasos con corrección diferida, pendientes para la étape 17. */
   errores_acumulados?: ErrorSenalado[];
+  /** Cambio 19: errores fuera del alcance, solo para mostrarlos en la étape 17. */
+  observaciones_acumuladas?: Observacion[];
   ultimo_mensaje_agente?: string;
+  /** Cambio 16: lo que aún falta, para repetirlo al retomar con «continuar». */
+  ultimo_mensaje_sistema?: string;
   justificacion_secuenciacion?: string[];
   bloqueo?: { razon: string; unidad_id?: string; dominio_id?: string };
 }
@@ -215,6 +255,8 @@ export interface EstadoPublico {
   paso: string | null;
   fase: FasePublica;
   niveles?: NivelRequerido[];
+  /** Cambio 2: los ejercicios pedidos, mientras se espera la evidencia. */
+  enunciado?: string;
   errores_pendientes?: number;
   bloqueo?: Requisitos["bloqueo"];
 }
@@ -227,6 +269,8 @@ export interface SugerenciaReactivacion {
 
 export interface RespuestaFlujo {
   mensaje_agente: string | null;
+  /** Cambio 5: la presentación por étapes, para que el frontend la muestre en bloques. */
+  secciones?: Array<{ etapa: number; titulo: string; texto: string }>;
   mensaje_sistema: string | null;
   resultado?: "avanza" | "requiere_completar" | "requiere_correccion" | "correccion_incompleta" | "unidad_completada";
   estado: EstadoPublico;

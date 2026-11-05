@@ -4,9 +4,40 @@ Backend del agente pedagógico. Recibe los mensajes del alumno y ejecuta la lecc
 
 **Lo fijo y lo libre (Principio 8):** el livrable fija lo declarativo, es decir, la regla, sus formas, las excepciones, los errores frecuentes y las formas de evidencia. El agente genera en cada sesión lo procedimental: ejemplos nuevos (al menos 5), explicaciones adaptadas y ejercicios propios. Lo que se corrige es la evidencia del alumno, contrastada con la regla fija.
 
+**Formato de las respuestas del agente:**
+- Cada respuesta tiene un contrato (`salida_llm.ts`) con su esquema JSON estricto. Gemini lo impone al modelo (`responseJsonSchema`). Con Claude, el formato se exige por instrucciones y la reparación hace de red de seguridad.
+- El prompt incluye un ejemplo concreto de cada formato.
+- La presentación llega **por étapes**, una sección por cada una, porque algunos proveedores cortan los textos largos en 4096 caracteres. Se comprueba que no falte ninguna étape, y un texto de exactamente 4096 caracteres dispara una alarma (203 `warning`).
+- Los saltos de línea mal escapados (`\n` literal) se normalizan.
+- Si una respuesta falla, hay **un** segundo intento, según el tipo de fallo:
+  - *cortada* por el límite de tokens → se repite con el doble de espacio. Incluye las respuestas **vacías** por el límite, típicas de modelos que razonan antes de responder; el registro guarda `finish_reason`, tokens y si hubo razonamiento;
+  - *ilegible*, sin JSON → se repite desde cero;
+  - *contrato*, campos mal → se le devuelve al modelo con los errores, sin reenviar las fotos.
+- Los **fallos pasajeros** del proveedor (202 saturado, 204 tiempo agotado, 206 error del proveedor) también tienen **un** segundo intento: se repite la misma petición (con las mismas fotos) usando el **modelo de respaldo** (`gemini-3.5-flash-lite` por defecto). La pausa previa es de 5 s si el proveedor avisó saturación (HTTP 503 "high demand" o 429) y de 1.5 s en los demás casos. Peor caso: 60 s + 5 s + 60 s = 125 s, dentro de los 150 s de Supabase. Los fallos de formato (203) se reparan con el modelo principal, no con el respaldo. Los permanentes (201 clave, 205 y 208 configuración, 207 sin crédito, 430 tope diario) nunca se reintentan. Un código 202/204/206 con severidad `warning` en `logs_sistema` indica un reintento.
+
 **Principio de diseño:** el LLM *percibe* (transcribe, cuenta, diagnostica) y el código *decide* (umbrales 80/100, avance de étape, estado de la unidad, secuenciación). El total de ejercicios pedidos lo fija el sistema al registrar la solicitud, así que el agente no puede inflarlo.
 
-Versión de datos: MC-OPERACIONAL v1.5.0 (alineado con MC-001 v1.0.3) · Verificación: `deno check` sin errores · 52 pruebas pasando.
+**Formas de evidencia (cambio 13):** en la étape 15 no basta la cantidad. La IA reporta en `condiciones` si se cumple cada condición de contenido que el livrable declara (p. ej. "al menos 2 plurales irregulares") y el código decide: si falta alguna, `requiere_completar` y el alumno añade solo lo necesario. Las étapes 16 y 18 no tienen formas de evidencia: ahí las condiciones se ignoran.
+
+**Texto único (cambio 15):** un paso de un solo nivel medido en palabras (la étape 16) es UN texto: cada entrega es el texto completo y reemplaza a la anterior, y las palabras las cuenta el código sobre la transcripción (`contarPalabras`), no la IA. El aviso dice "Tu texto tiene N palabras; el mínimo es M. Reenvía el texto COMPLETO, ampliado." En `evidencia.metricas.conteo` queda `codigo` o `ia`.
+
+**Retomar (cambio 16):** "continuar" mientras se espera evidencia o corrección repite también el último aviso del sistema (lo que falta), sin llamar a la IA.
+
+**Lista de pendientes (cambio 17):** lo que hay que corregir lo arma el código, completo y numerado ("Pendientes (2): [2] «i mean» · [3] «eties». Reescribe cada uno."): al entrar a la étape 17, tras cada corrección parcial y al retomar con "continuar". La IA explica; el código garantiza que no falte ninguno.
+
+**Errores falsos (cambio 18):** un "error" cuya corrección es idéntica al fragmento (sin contar espacios ni la puntuación de los extremos; las mayúsculas sí cuentan) se descarta antes de guardarse, con un aviso 203 `warning` en `logs_sistema`. El mismo filtro se aplica a errores ya guardados: si una sesión solo tenía pendientes falsos, avanza sola al retomarla.
+
+**Observaciones fuera del alcance (cambio 19):** los errores que no son del objetivo de la lección viajan aparte de los errores a corregir (`observaciones_acumuladas`) y se muestran al entrar a la étape 17 ("Además observé errores de otros temas (no se evalúan ni hay que reescribirlos): «life have been» → «life has been»…"), sin duplicados y como mucho 10. No cuentan para el 100 % y no pasan a la étape 18. Siguen registrados en `evidencia.diagnosticos`.
+
+**Corrección diferida (cambio 20, MC-001 v1.0.4 §7.5):** cada error fuera del alcance lleva su `propietario`, el identificador del grafo que le asigna la tabla de fronteras del livrable. Al entrar a la étape 17 (`alcance.ts`):
+- propietario **ya estudiado** (todas sus lecciones declaradas en acquis/consolidé) → se exige aquí, marcado "(tema EN-420)";
+- **no estudiado** → se muestra "(se corregirá en EN-510)" y se guarda en `errores_diferidos`; se exige en la étape 17 de la primera lección del propietario (la lección, su sous-domaine o su dominio) y se borra al corregirse;
+- **transversal**, sin propietario o inexistente en el grafo → solo observación.
+Requiere la migración 005. Sin ella la étape 17 sigue funcionando y todo queda como observación (aviso en `logs_sistema`).
+
+**Consignas (cambio 14):** la étape 16 da solo el tema y la extensión, sin mencionar la regla (MC-001 §16), y no repite las formas de evidencia de la étape 15. Los términos técnicos del livrable (en francés) se traducen al idioma de la interfaz.
+
+Versión de datos: MC-OPERACIONAL v1.7.0 (alineado con MC-001 v1.0.4 y MC-002 v1.2.0) · Verificación: `deno check` sin errores · 107 pruebas pasando.
 
 ---
 
@@ -18,12 +49,13 @@ Versión de datos: MC-OPERACIONAL v1.5.0 (alineado con MC-001 v1.0.3) · Verific
 | `flujo_estudiante.ts` | Máquina de estados del modo estudiante (orquesta todo lo demás) |
 | `secuenciacion.ts` | MC-009 determinista: accesibilidad, potencial, desvíos con pila, desempate |
 | `completitud.ts` | Umbral de producción (80 %) y de corrección (100 %) |
+| `alcance.ts` | Errores fuera del alcance: propietario y tratamiento (MC-001 §7.5) |
 | `puntaje.ts` | `score_lecon` acotado (MC-002 §17bis) |
 | `reactivacion.ts` | Motor de prioridad de MC-006 §15bis; **solo sugiere**, nunca cambia estados |
 | `plan.ts` | Navegación del plan de ejecución leído de MC-OPERACIONAL |
 | `prompt.ts` | Prompt en 3 bloques (estático / livrable / turno), con solo las reglas de la tarea del turno |
 | `salida_llm.ts` | Contratos JSON del agente (zod) y parser tolerante (errores → 203) |
-| `llm_tipos.ts`, `llm_claude.ts`, `llm_openrouter.ts`, `llm_fabrica.ts` | Patrón adapter: cambiar de proveedor = cambiar un secret |
+| `llm_tipos.ts`, `llm_gemini.ts`, `llm_claude.ts`, `llm_fabrica.ts` | Patrón adapter: Gemini para pruebas, Claude para producción. Cambiar de proveedor = cambiar un secret. |
 | `datos.ts` | Repositorio (interfaz) + implementación Supabase |
 | `redis.ts` | Upstash: rate limit, tope diario global, candado, caché de livrables |
 | `registro.ts` | Escritura en `logs_sistema` (nunca rompe la petición) |
@@ -43,6 +75,8 @@ Versión de datos: MC-OPERACIONAL v1.5.0 (alineado con MC-001 v1.0.3) · Verific
 
 ### Paso 1 — Migración SQL
 Supabase → **SQL Editor** → pega el contenido de `MC-DB-000-MIGRACION-002.sql` → **Run**. Es idempotente: si la ejecutas dos veces no pasa nada. Crea `logs_sistema`, `livrables`, las columnas nuevas, los triggers de límites y el bucket privado `evidencias`.
+
+Después, en orden y una sola vez cada una: `MIGRACION-003` (borrado de cuentas), `MIGRACION-004` (consentimiento) y `MIGRACION-005` (tabla `errores_diferidos` y contenido de EN-411 v1.0.1). Todas son idempotentes.
 
 ### Paso 2 — Idiomas del catálogo (si aún no existen)
 ```sql
@@ -72,14 +106,16 @@ Supabase → Edge Functions → **Secrets**:
 |---|---|---|
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | automáticos | Los inyecta Supabase. No los crees. |
 | `CLAVE_SERVICIO` | solo si falta el anterior | Tu clave secreta (`sb_secret_…`). Supabase no deja crear secrets con prefijo `SUPABASE_`. |
-| `LLM_PROVIDER` | **sí** | `openrouter` (ahora) o `claude` (después) |
-| `OPENROUTER_API_KEY` | si usas openrouter | Tu key de OpenRouter |
+| `LLM_PROVIDER` | **sí** | `gemini` (solo pruebas del desarrollador) o `claude` (producción). Ver el aviso de abajo. |
+| `GEMINI_API_KEY` | si usas gemini | Tu key de Google AI Studio (aistudio.google.com → Get API key) |
 | `ANTHROPIC_API_KEY` | si usas claude | Tu key de Anthropic Console |
-| `LLM_MODEL` | no | Por defecto `openrouter/free` o `claude-sonnet-5-5` |
-| `OPENROUTER_MODO_JSON` | no | `false` si un modelo fijo rechaza `response_format` |
+| `LLM_MODEL` | no | Por defecto `gemini-3.8-flash` o `claude-sonnet-5-5`. Un solo modelo para texto y fotos. |
+| `LLM_MODEL_RESPALDO` | no | Modelo del segundo intento tras saturación o tiempo agotado. Por defecto `gemini-3.5-flash-lite` con Gemini; con Claude no hay respaldo salvo que lo definas. `ninguno` lo desactiva. Mismo proveedor y misma clave. |
+| `LLM_LIMITE_DIARIO` | no | Tope de llamadas a la IA por día para toda la app (por defecto 200). Ajústalo a tu límite real de AI Studio. |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | recomendados | Sin ellos no hay rate limit, candado ni caché (aviso 501) |
 | `ALLOWED_ORIGIN` | recomendado en producción | Tu dominio, p. ej. `https://tu-app.vercel.app` (varios separados por coma). Sin él se acepta cualquier origen. |
-| `SITIO_URL` | no | Se envía a OpenRouter como referencia |
+
+> **⚠ Gemini es solo para pruebas del desarrollador.** Los términos de la API de Gemini exigen 18 años o más y prohíben usarla en apps dirigidas a menores o con probabilidad de ser usadas por ellos, y el plan gratuito usa los datos para mejorar los productos de Google. C-Method admite alumnos de 13 a 17 años y su Aviso de Privacidad nombra a Anthropic. **Antes de abrir la app a alumnos: `LLM_PROVIDER = claude`.** El diagnóstico muestra este aviso mientras Gemini esté activo.
 
 ### Paso 5 — Desplegar
 **Opción A, dashboard:** Edge Functions → Deploy a new function → **Via Editor** → nombre `agente-chatito` → borra la plantilla, pega **todo** `agente-chatito-DASHBOARD.ts` en `index.ts` → **Deploy**.
@@ -130,6 +166,17 @@ async function fotoABase64(file, lado = 1600, calidad = 0.8) {
 }
 ```
 
+**Registro y consentimiento** (migración 004). El perfil lo crea la base de datos al registrarse. El consentimiento se envía en el propio registro:
+```js
+await supabase.auth.signUp({ email, password, options: { data: {
+  declaracion_edad: 'mayor_18',          // o 'menor_13_17_con_tutor'; si es menor de 13, no se registra
+  acepta_terminos: true,
+  version_aviso: '1.0',
+  consentimiento_analisis: false,        // casilla voluntaria, desmarcada por defecto
+} } });
+```
+Si el usuario entra con Google o Apple, o el consentimiento no llegó en el registro, se registra después con `supabase.rpc('registrar_consentimiento', { p_declaracion_edad, p_version_aviso, p_consentimiento_analisis })`. Mientras no exista, la función responde **313** en «continuar» y «responder». El interruptor de análisis de la configuración llama a `supabase.rpc('actualizar_consentimiento_analisis', { p_valor })`. Cada cambio queda en `historial_consentimientos`.
+
 **Eliminar la cuenta.** Es irreversible. Pide confirmación en la interfaz y envía la frase literal `ELIMINAR`:
 ```js
 const r = await llamarAgente({ accion: 'eliminar_cuenta', confirmacion: 'ELIMINAR' });
@@ -151,7 +198,8 @@ Se borran las fotos de Storage y el usuario; la base de datos elimina en cascada
   "mensaje_agente": "texto del agente (o null)",
   "mensaje_sistema": "decisión del sistema: umbrales, avance (o null)",
   "resultado": "avanza | requiere_completar | requiere_correccion | correccion_incompleta | unidad_completada",
-  "estado": { "unidad_id": "EN-411", "etapa_actual": 15, "paso": "exercices_n1_n2",
+  "secciones": [{ "etapa": 8, "titulo": "Description grammaticale", "texto": "…" }],
+  "estado": { "unidad_id": "EN-411", "etapa_actual": 15, "enunciado": "Nivel 1: …", "paso": "exercices_n1_n2",
               "fase": "esperando_evidencia | esperando_correccion | listo_para_continuar | curriculo_bloqueado | curriculo_completado",
               "niveles": [{ "nivel": 1, "total_pedido": 8, "unidad_medida": "ejercicios", "minimo_requerido": 7 }],
               "errores_pendientes": 3, "bloqueo": { "razon": "leccion_sin_redactar", "unidad_id": "EN-412" } },
@@ -187,11 +235,12 @@ Mientras se recoge la producción, el agente **no corrige**: MC-001 §17 exige t
 | 107 | CUENTA_NO_ELIMINADA | 500 | Las fotos ya se borraron, pero falló el borrado del usuario. Basta con reintentar. |
 | 201 | LLM_AUTENTICACION | 502 | API key inválida o revocada. Revisa el secret. |
 | 202 | LLM_LIMITE_PROVEEDOR | 503 | El proveedor está saturado o limita las peticiones. |
-| 203 | LLM_RESPUESTA_MALFORMADA | 502 | El modelo devolvió JSON roto. `contexto.modelo` dice cuál; `contexto.fragmento` muestra 300 caracteres. |
+| 203 | LLM_RESPUESTA_MALFORMADA | 502 | El modelo devolvió una respuesta fuera de formato **dos veces**: antes de fallar, la función le reenvía sus errores y le pide corregirla, una sola vez. Con severidad `warning`, el 203 indica una reparación intentada; con `error`, que también falló. `contexto.modelo` dice qué modelo fue y `contexto.fragmento` muestra 300 caracteres. |
 | 204 | LLM_TIEMPO_AGOTADO | 504 | No hubo respuesta en 60 s. |
 | 205 | LLM_NO_CONFIGURADO | 500 | `LLM_PROVIDER` falta o es inválido, o falta la key del proveedor. |
 | 206 | LLM_ERROR_PROVEEDOR | 502 | Error 5xx o de red del proveedor. |
 | 207 | LLM_SIN_CREDITO | 502 | Cuota o crédito agotado (HTTP 402). |
+| 208 | LLM_MODELO_NO_DISPONIBLE | 502 | **Configuración, no se reintenta.** HTTP 404 (el modelo no existe: revisa `LLM_MODEL` o `LLM_MODEL_RESPALDO`; el registro dice cuál) o 400 (el proveedor rechazó la forma de la petición, por ejemplo el esquema). |
 | 301 / 303 / 304 | Límites de idiomas y solicitudes | 409 | Los lanzan los triggers de la BD. |
 | 305 | SIN_CONTENIDO_DECLARATIVO | 409 | MC-009 se bloqueó: falta redactar una lección. **Mira `unidad_id` en el registro.** |
 | 306 | PETICION_INVALIDA | 400 | El cuerpo no cumple el contrato. |
@@ -201,10 +250,11 @@ Mientras se recoge la producción, el agente **no corrige**: MC-001 §17 exige t
 | 310 | ACCION_NO_ESPERADA | 409 | Se envió "responder" cuando tocaba "continuar". |
 | 311 | PETICION_EN_CURSO | 409 | Doble toque: ya hay una petición del mismo usuario en marcha. |
 | 312 | CONFIRMACION_REQUERIDA | 400 | `eliminar_cuenta` sin la frase exacta `ELIMINAR`. No se borró nada. |
+| 313 | CONSENTIMIENTO_PENDIENTE | 403 | El usuario no ha aceptado el aviso y los términos. El frontend debe mostrar la pantalla de consentimiento. |
 | 401 | NO_AUTENTICADO | 401 | JWT ausente o inválido. |
 | 403 | SIN_PERMISO | 403 | El `alumno_idioma_id` no es del usuario (o no existe). |
 | 429 | LIMITE_USUARIO | 429 | Más de 6 mensajes por minuto. |
-| 430 | LIMITE_GLOBAL_DIARIO | 429 | Se alcanzó el tope diario de llamadas a la IA de toda la app (45). |
+| 430 | LIMITE_GLOBAL_DIARIO | 429 | Se alcanzó el tope diario de llamadas a la IA de toda la app (`LLM_LIMITE_DIARIO`, por defecto 200). |
 | 501 | REDIS_NO_DISPONIBLE | — | Aviso: Upstash falta o falla; la app sigue sin protección. |
 | 502 | STORAGE_FALLIDO | — | Aviso: la foto no se guardó; la transcripción sí. |
 | 503 | MODO_NO_IMPLEMENTADO | 501 | Los modos docente llegan en v1.1. |
@@ -258,7 +308,7 @@ delete from logs_sistema where creado_en < now() - interval '90 days';
 ## 7. Pruebas y empaquetado
 
 ```bash
-deno test pruebas/                                      # 52 pruebas; no necesitan red ni BD
+deno test pruebas/                                      # 107 pruebas; no necesitan red ni BD
 deno check index.ts                                     # tipos
 deno run --allow-read --allow-write herramientas/empaquetar.ts   # → agente-chatito-DASHBOARD.ts
 deno check agente-chatito-DASHBOARD.ts

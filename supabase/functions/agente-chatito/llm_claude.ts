@@ -20,6 +20,7 @@ const VERSION_API = "2023-06-01";
 
 interface RespuestaAnthropic {
   model?: string;
+  stop_reason?: string;
   content?: Array<{ type: string; text?: string }>;
   usage?: {
     input_tokens?: number;
@@ -72,9 +73,14 @@ export class ProveedorClaude implements ProveedorLLM {
         max_tokens: p.maxTokens,
         temperature: p.temperatura,
         system: sistema,
-        messages: [{ role: "user", content: contenido }],
+        // El esquema (p.formato) no se envía a Claude: su formato se exige por
+        // instrucciones, con el reintento de reparación como red de seguridad.
+        messages: [
+          { role: "user", content: contenido },
+          ...(p.historial ?? []).map((h) => ({ role: h.rol, content: h.texto })),
+        ],
       }),
-    }, this.timeoutMs, this.nombre);
+    }, this.timeoutMs, this.nombre, this.modelo);
 
     if (!res.ok) {
       throw new ErrorApp(codigoPorHttp(res.status), `claude HTTP ${res.status}: ${await detalleError(res)}`, {
@@ -90,10 +96,22 @@ export class ProveedorClaude implements ProveedorLLM {
       .map((b) => b.text!)
       .join("\n")
       .trim();
-    if (!texto) throw new ErrorApp(203, "claude devolvió una respuesta sin texto", { proveedor: this.nombre });
+    if (!texto) {
+      const cortada = datos.stop_reason === "max_tokens";
+      throw new ErrorApp(203, cortada ? `claude agotó el límite de ${p.maxTokens} tokens sin escribir texto` : "claude devolvió una respuesta sin texto", {
+        proveedor: this.nombre,
+        modelo: datos.model ?? this.modelo,
+        finish_reason: datos.stop_reason ?? null,
+        tokens_entrada: datos.usage?.input_tokens ?? null,
+        tokens_salida: datos.usage?.output_tokens ?? null,
+        limite_tokens: p.maxTokens,
+        ...(cortada ? { tipo_fallo: "cortada" } : {}),
+      });
+    }
 
     return {
       texto,
+      cortada: datos.stop_reason === "max_tokens",
       proveedor: this.nombre,
       modelo: datos.model ?? this.modelo,
       uso: {

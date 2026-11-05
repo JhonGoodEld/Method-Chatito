@@ -4,6 +4,8 @@ import { ErrorApp } from "../errores.ts";
 import type { PeticionLLM, ProveedorLLM, RespuestaLLM } from "../llm_tipos.ts";
 import type { ServiciosAuxiliares } from "../flujo_estudiante.ts";
 import type {
+  ErrorDiferido,
+  ErrorDiferidoNuevo,
   FilaEstadoUnidad,
   FilaEvidencia,
   FilaEvidenciaNueva,
@@ -27,12 +29,18 @@ export class RepositorioMemoria implements Repositorio {
   lecciones: Array<LeccionDeclarada & { idioma: string; contenido: string | null }> = [];
   archivos: string[] = [];
   fallarSubida = false;
+  sinConsentimiento = new Set<string>();
+  diferidos: ErrorDiferido[] = [];
+  fallarDiferidos = false;
 
   obtenerAlumnoIdioma(id: string) {
     return Promise.resolve(this.alumnos.get(id) ?? null);
   }
   obtenerRolPerfil(u: string) {
     return Promise.resolve(this.roles.get(u) ?? null);
+  }
+  consentimientoRegistrado(u: string) {
+    return Promise.resolve(!this.sinConsentimiento.has(u));
   }
   obtenerSesion(a: string) {
     const s = this.sesiones.get(a);
@@ -105,24 +113,59 @@ export class RepositorioMemoria implements Repositorio {
     this.archivos.push(ruta);
     return Promise.resolve();
   }
+  guardarErroresDiferidos(filas: ErrorDiferidoNuevo[]) {
+    if (this.fallarDiferidos) throw new ErrorApp(101, "errores_diferidos no existe (migración 005 sin ejecutar)");
+    for (const f of filas) {
+      const duplicado = this.diferidos.some((d) =>
+        d.alumno_idioma_id === f.alumno_idioma_id && d.unidad_origen === f.unidad_origen &&
+        d.fragmento === f.fragmento && d.correccion === f.correccion
+      );
+      if (!duplicado) this.diferidos.push({ ...structuredClone(f), id: crypto.randomUUID(), creado_en: marca() });
+    }
+    return Promise.resolve();
+  }
+  obtenerErroresDiferidos(a: string) {
+    if (this.fallarDiferidos) throw new ErrorApp(101, "errores_diferidos no existe (migración 005 sin ejecutar)");
+    return Promise.resolve(structuredClone(this.diferidos.filter((d) => d.alumno_idioma_id === a)));
+  }
+  borrarErroresDiferidos(ids: string[]) {
+    this.diferidos = this.diferidos.filter((d) => !ids.includes(d.id));
+    return Promise.resolve();
+  }
   ping() {
     return Promise.resolve(true);
   }
 }
 
+/** Una respuesta del guion que, en lugar de texto, lanza este error (simula fallos del proveedor). */
+export class FalloProveedor {
+  constructor(readonly codigo: 201 | 202 | 204 | 206 | 207 | 208, readonly contexto: Record<string, unknown> = {}) {}
+}
+
+/** Marca una respuesta del guion como cortada por el límite de tokens. */
+export class Cortada {
+  constructor(readonly contenido: unknown) {}
+}
+
+/** Secciones de presentación válidas para las étapes indicadas. */
+export const secc = (etapas: number[]) => etapas.map((n) => ({ etapa: n, titulo: `Étape ${n}`, texto: `Contenido de la étape ${n}` }));
+export const PRESENTACION = secc([8, 9, 10, 11, 12, 13, 14]);
+
 /** LLM con guion: devuelve las respuestas en orden y guarda cada petición recibida. */
 export class LLMFalso implements ProveedorLLM {
   readonly nombre = "falso";
-  readonly modelo = "guion-v1";
   peticiones: PeticionLLM[] = [];
-  constructor(private readonly guion: Array<unknown>) {}
+  constructor(private readonly guion: Array<unknown>, readonly modelo = "guion-v1") {}
 
   generar(p: PeticionLLM): Promise<RespuestaLLM> {
     this.peticiones.push(p);
     const siguiente = this.guion.shift();
     if (siguiente === undefined) throw new Error("El guion del LLM falso se agotó");
-    const texto = typeof siguiente === "string" ? siguiente : JSON.stringify(siguiente);
-    return Promise.resolve({ texto, proveedor: this.nombre, modelo: this.modelo, uso: {}, latenciaMs: 1 });
+    if (siguiente instanceof FalloProveedor) return Promise.reject(new ErrorApp(siguiente.codigo, "fallo simulado del proveedor", siguiente.contexto));
+    const cortada = siguiente instanceof Cortada;
+    const valor = cortada ? (siguiente as Cortada).contenido : siguiente;
+    const texto = typeof valor === "string" ? valor : JSON.stringify(valor);
+    return Promise.resolve({ texto, cortada, proveedor: this.nombre, modelo: this.modelo, uso: {}, latenciaMs: 1 });
   }
 }
 

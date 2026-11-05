@@ -33,10 +33,20 @@ const ErrorDetectadoSchema = z.object({
   fuera_de_scope: z.boolean(),
   unidad_relacionada: z.string().nullable().optional().transform((v) => v ?? null),
   nivel: z.number().int().nullable().optional().transform((v) => v ?? null),
+  propietario: z.string().nullable().optional().transform((v) => v ?? null),
 });
+
+/** Una étape presentada (cambio 5: una sección por étape, cada texto corto). */
+export const SeccionSchema = z.object({
+  etapa: z.number().int(),
+  titulo: z.string(),
+  texto: z.string().min(1),
+});
+export type Seccion = z.infer<typeof SeccionSchema>;
 
 export const SalidaSolicitudSchema = z.object({
   mensaje_para_alumno: z.string().min(1),
+  secciones: z.array(SeccionSchema).default([]),
   solicitud: z
     .object({
       enunciado: z.string().min(1),
@@ -67,6 +77,10 @@ export const SalidaEvaluacionSchema = z.object({
     )
     .min(1),
   errores: z.array(ErrorDetectadoSchema).default([]),
+  /** Cambio 13: condiciones de contenido de las formas de evidencia (étape 15). La IA percibe; el código decide. */
+  condiciones: z
+    .array(z.object({ nivel: z.number().int().nullable(), condicion: z.string().min(1), cumple: z.boolean(), detalle: z.string() }))
+    .default([]),
 });
 
 export const SalidaCorreccionSchema = z.object({
@@ -116,7 +130,33 @@ export function extraerJson(texto: string): unknown {
   throw new Error("objeto JSON sin cerrar");
 }
 
-/** Valida contra el esquema; cualquier fallo → código 203 con un fragmento truncado para depurar. */
+/**
+ * Cambio 1: algunos modelos escapan dos veces los saltos de línea y envían los
+ * caracteres «\» + «n» sueltos. Se convierten en saltos reales en todos los
+ * textos de la respuesta. Solo actúa si hay una barra invertida.
+ */
+export function normalizarTextos(valor: unknown): unknown {
+  if (typeof valor === "string") {
+    if (!valor.includes("\\")) return valor;
+    return valor
+      .replace(/\\r\\n/g, "\n")
+      .replace(/\\n/g, "\n")
+      .replace(/\\t/g, "\t")
+      .replace(/\\"/g, '"');
+  }
+  if (Array.isArray(valor)) return valor.map(normalizarTextos);
+  if (valor && typeof valor === "object") {
+    return Object.fromEntries(Object.entries(valor).map(([k, v]) => [k, normalizarTextos(v)]));
+  }
+  return valor;
+}
+
+/**
+ * Valida contra el esquema; cualquier fallo → código 203 con un fragmento truncado
+ * para depurar. contexto.tipo_fallo le dice a la reparación qué hacer (cambio 3):
+ *   ilegible = ni siquiera es JSON → repetir desde cero
+ *   contrato = JSON válido con campos mal → pedir al modelo que lo corrija
+ */
 export function parsearSalida<T>(esquema: z.ZodType<T, z.ZodTypeDef, unknown>, texto: string, contexto: Record<string, unknown>): T {
   let crudo: unknown;
   try {
@@ -124,16 +164,164 @@ export function parsearSalida<T>(esquema: z.ZodType<T, z.ZodTypeDef, unknown>, t
   } catch (e) {
     throw new ErrorApp(203, `JSON ilegible: ${e instanceof Error ? e.message : String(e)}`, {
       ...contexto,
+      tipo_fallo: "ilegible",
       fragmento: texto.slice(0, 300),
     });
   }
-  const r = esquema.safeParse(crudo);
+  const r = esquema.safeParse(normalizarTextos(crudo));
   if (!r.success) {
     const problemas = r.error.issues.slice(0, 5).map((i) => `${i.path.join(".") || "(raíz)"}: ${i.message}`);
     throw new ErrorApp(203, `JSON fuera de contrato: ${problemas.join(" | ")}`, {
       ...contexto,
+      tipo_fallo: "contrato",
       fragmento: texto.slice(0, 300),
     });
   }
   return r.data;
 }
+
+/**
+ * Alarma del cambio 5: un texto de EXACTAMENTE 4096 caracteres casi seguro es
+ * un corte impuesto por el proveedor. Devuelve las rutas sospechosas.
+ */
+export function camposSospechosos(texto: string, limite = 4096): string[] {
+  let crudo: unknown;
+  try {
+    crudo = extraerJson(texto);
+  } catch {
+    return [];
+  }
+  const rutas: string[] = [];
+  const recorrer = (v: unknown, ruta: string) => {
+    if (typeof v === "string" && v.length === limite) rutas.push(ruta || "(raíz)");
+    else if (Array.isArray(v)) v.forEach((x, i) => recorrer(x, `${ruta}[${i}]`));
+    else if (v && typeof v === "object") Object.entries(v).forEach(([k, x]) => recorrer(x, ruta ? `${ruta}.${k}` : k));
+  };
+  recorrer(crudo, "");
+  return rutas;
+}
+
+// =====================================================================
+// Contratos completos: validación (zod) + esquema JSON estricto que se envía
+// al proveedor (mejora A) + ejemplo concreto para el prompt (mejora C).
+// Esquemas en formato "strict": todos los campos son obligatorios (los
+// opcionales admiten null) y additionalProperties es false. Los rangos
+// (mínimos, máximos) los sigue validando zod, porque el modo estricto de
+// los proveedores no los admite.
+// =====================================================================
+
+export interface Contrato<T> {
+  nombre: string;
+  zod: z.ZodType<T, z.ZodTypeDef, unknown>;
+  json: Record<string, unknown>;
+  ejemplo: unknown;
+}
+
+const obj = (props: Record<string, unknown>) => ({
+  type: "object",
+  additionalProperties: false,
+  required: Object.keys(props),
+  properties: props,
+});
+const texto = { type: "string" };
+const entero = { type: "integer" };
+const enteroONulo = { type: ["integer", "null"] };
+
+export const CONTRATO_SOLICITUD: Contrato<SalidaSolicitud> = {
+  nombre: "solicitud",
+  zod: SalidaSolicitudSchema,
+  json: obj({
+    mensaje_para_alumno: texto,
+    secciones: { type: "array", items: obj({ etapa: entero, titulo: texto, texto: texto }) },
+    solicitud: {
+      anyOf: [
+        { type: "null" },
+        obj({
+          enunciado: texto,
+          niveles: {
+            type: "array",
+            items: obj({
+              nivel: enteroONulo,
+              total_pedido: entero,
+              unidad_medida: { type: "string", enum: ["ejercicios", "palabras", "frases"] },
+            }),
+          },
+        }),
+      ],
+    },
+  }),
+  ejemplo: {
+    mensaje_para_alumno: "Formas de evidencia esperadas: … Ahora, los ejercicios.",
+    secciones: [
+      { etapa: 8, titulo: "Description grammaticale", texto: "…" },
+      { etapa: 9, titulo: "Utilisation", texto: "…" },
+    ],
+    solicitud: {
+      enunciado: "Nivel 1: …\n1. …\n2. …\nNivel 2: …\n1. …",
+      niveles: [
+        { nivel: 1, total_pedido: 8, unidad_medida: "ejercicios" },
+        { nivel: 2, total_pedido: 4, unidad_medida: "frases" },
+      ],
+    },
+  },
+};
+
+export const CONTRATO_EVALUACION: Contrato<SalidaEvaluacion> = {
+  nombre: "evaluacion",
+  zod: SalidaEvaluacionSchema,
+  json: obj({
+    mensaje_para_alumno: texto,
+    transcripcion: texto,
+    niveles: {
+      type: "array",
+      items: obj({ nivel: enteroONulo, total_entregado: entero, items_evaluados: entero, items_correctos: entero }),
+    },
+    errores: {
+      type: "array",
+      items: obj({
+        fragmento: texto,
+        correccion: texto,
+        causa: { type: "string", enum: [...CAUSAS] },
+        explicacion: texto,
+        fuera_de_scope: { type: "boolean" },
+        unidad_relacionada: { type: ["string", "null"] },
+        nivel: enteroONulo,
+        propietario: { type: ["string", "null"] },
+      }),
+    },
+    condiciones: {
+      type: "array",
+      items: obj({ nivel: enteroONulo, condicion: texto, cumple: { type: "boolean" }, detalle: texto }),
+    },
+  }),
+  ejemplo: {
+    mensaje_para_alumno: "Recibí tus respuestas…",
+    transcripcion: "1. …\n2. …",
+    niveles: [{ nivel: 1, total_entregado: 8, items_evaluados: 8, items_correctos: 7 }],
+    errores: [{
+      fragmento: "…",
+      correccion: "…",
+      causa: "generalisation_excessive",
+      explicacion: "…",
+      fuera_de_scope: false,
+      unidad_relacionada: null,
+      nivel: 1,
+      propietario: null,
+    }],
+    condiciones: [{ nivel: 3, condicion: "al menos 2 plurales irregulares", cumple: false, detalle: "solo hay 1: …" }],
+  },
+};
+
+export const CONTRATO_CORRECCION: Contrato<SalidaCorreccion> = {
+  nombre: "correccion",
+  zod: SalidaCorreccionSchema,
+  json: obj({ mensaje_para_alumno: texto, transcripcion: texto, indices_corregidos: { type: "array", items: entero } }),
+  ejemplo: { mensaje_para_alumno: "Corregiste bien los puntos 0 y 2…", transcripcion: "…", indices_corregidos: [0, 2] },
+};
+
+export const CONTRATO_MENSAJE: Contrato<z.infer<typeof SalidaMensajeSchema>> = {
+  nombre: "mensaje",
+  zod: SalidaMensajeSchema,
+  json: obj({ mensaje_para_alumno: texto }),
+  ejemplo: { mensaje_para_alumno: "Corrección détaillée: 1) … → … porque …" },
+};

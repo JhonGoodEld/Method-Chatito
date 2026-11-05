@@ -8,12 +8,12 @@
 // un alumno reporta "error 203", el request_id localiza el registro exacto en
 // la tabla logs_sistema.
 
-import { GRAFOS, INFRA, MC, secretOpcional, validarDatosCanonicos } from "./config.ts";
+import { GRAFOS, INFRA, MC, secretOpcional, validarDatosCanonicos, limiteGlobalDiario } from "./config.ts";
 import { CuentaSupabase, eliminarCuenta } from "./cuenta.ts";
 import { crearClienteAdmin, obtenerUsuarioDelToken, type Repositorio, RepositorioSupabase } from "./datos.ts";
 import { ErrorApp, normalizarError } from "./errores.ts";
 import { manejarEstudiante } from "./flujo_estudiante.ts";
-import { crearProveedor } from "./llm_fabrica.ts";
+import { crearProveedor, crearProveedorRespaldo } from "./llm_fabrica.ts";
 import { validarCuerpo, validarImagenes } from "./peticion.ts";
 import { type Registrador, RegistradorConsola, RegistradorSupabase } from "./registro.ts";
 import { ServiciosRedis } from "./redis.ts";
@@ -69,6 +69,11 @@ async function diagnostico(repo: Repositorio, redis: ServiciosRedis | null, usua
   try {
     const llm = crearProveedor();
     resultado.proveedor = { nombre: llm.nombre, modelo: llm.modelo };
+    resultado.modelo_respaldo = crearProveedorRespaldo()?.modelo ?? "ninguno";
+    resultado.limite_diario_llm = limiteGlobalDiario();
+    if (llm.nombre === "gemini") {
+      resultado.aviso = "Gemini gratis es SOLO para pruebas: sus términos prohíben apps para menores y el plan gratuito usa los datos. En producción, LLM_PROVIDER = claude.";
+    }
     if (probarLlm) {
       if (redis) {
         const lim = await redis.verificarLimiteGlobalLLM().catch(() => ({ permitido: true, reintentarEnSeg: 0 }));
@@ -78,7 +83,7 @@ async function diagnostico(repo: Repositorio, redis: ServiciosRedis | null, usua
         sistema: { estatico: 'Responde exactamente con {"ok": true}', contexto: "", dinamico: "" },
         mensajeUsuario: "ping",
         imagenes: [],
-        maxTokens: 20,
+        maxTokens: 1000, // margen para el razonamiento, que cuenta dentro del límite
         temperatura: 0,
       });
       resultado.prueba_llm = { ok: true, modelo_real: r.modelo, latencia_ms: r.latenciaMs };
@@ -158,6 +163,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         registro,
         auxiliares: redis,
         obtenerLLM: crearProveedor, // perezoso: retomar una sesión no necesita IA
+        obtenerLLMRespaldo: crearProveedorRespaldo, // solo se crea si el primer intento falla
         mc: MC,
         grafos: GRAFOS,
         usuarioId: usuario.id,

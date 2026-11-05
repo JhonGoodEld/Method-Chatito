@@ -1,6 +1,7 @@
 import { assert, assertAlmostEquals, assertEquals, assertThrows } from "./afirmar.ts";
-import { evaluarCorreccion, evaluarProduccion, minimoRequerido } from "../completitud.ts";
+import { contarPalabras, esErrorReal, esTextoUnico, evaluarCorreccion, evaluarProduccion, listaPendientes, minimoRequerido, notaObservaciones } from "../completitud.ts";
 import { MC, GRAFOS } from "../config.ts";
+import { clasificarFueraDeAlcance, normalizarPropietario, perteneceA } from "../alcance.ts";
 import { ErrorApp } from "../errores.ts";
 import { validarPlan } from "../plan.ts";
 import { calcularPuntaje } from "../puntaje.ts";
@@ -212,4 +213,71 @@ Deno.test("auth caído → 106 (no culpar al alumno); token inválido → 401", 
   const malo = await assertRejects(() => obtenerUsuarioDelToken(clienteFalso({ name: "AuthApiError", status: 403, message: "invalid JWT" }), "t"), ErrorApp);
   assertEquals(malo.codigo, 401);
   assertEquals(await obtenerUsuarioDelToken(clienteFalso(null, { id: "u1" }), "t"), { id: "u1" });
+});
+
+Deno.test("cambio 4: el prompt exige explicar con palabras propias y anotar solo con reglas del livrable", () => {
+  const t = bloqueEstatico(MC, "español");
+  assert(t.includes("no lo traduzcas ni lo copies frase por frase"));
+  assert(t.includes("cita SOLO reglas que existan en el livrable"));
+});
+
+Deno.test("cambio 14: el prompt exige traducir los términos técnicos del livrable al idioma de la interfaz", () => {
+  const p = bloqueEstatico(MC, "español");
+  assert(p.includes("se TRADUCEN al español") && p.includes("«pluriels réguliers» → «plurales regulares»"));
+});
+
+Deno.test("cambio 15: conteo de palabras del código", () => {
+  assertEquals(contarPalabras("I have not family, i mean, obviously I have a mom and a dad."), 14);
+  assertEquals(contarPalabras("I'm Mr Brightside — I have good moments ."), 7, "contracciones = 1; signos sueltos no cuentan");
+  assertEquals(contarPalabras("[ilegible] two children\n\nthree  brothers [línea 2]"), 4, "las marcas entre corchetes no cuentan");
+  assertEquals(contarPalabras("   "), 0);
+});
+
+Deno.test("cambio 15: solo un paso de un nivel medido en palabras es un texto único", () => {
+  assertEquals(esTextoUnico([{ unidad_medida: "palabras" }]), true);
+  assertEquals(esTextoUnico([{ unidad_medida: "frases" }]), false);
+  assertEquals(esTextoUnico([{ unidad_medida: "palabras" }, { unidad_medida: "ejercicios" }]), false);
+  assertEquals(esTextoUnico(undefined), false);
+});
+
+Deno.test("cambio 18: un error con corrección idéntica no es un error; las mayúsculas sí cuentan", () => {
+  assertEquals(esErrorReal({ fragmento: "two children", correccion: "two children" }), false);
+  assertEquals(esErrorReal({ fragmento: " two  children ", correccion: "two children." }), false, "espacios y puntuación de los extremos");
+  assertEquals(esErrorReal({ fragmento: "busses", correccion: "buses" }), true);
+  assertEquals(esErrorReal({ fragmento: "i mean", correccion: "I mean" }), true, "la mayúscula es un error real");
+  assertEquals(esErrorReal({ fragmento: "Im tired", correccion: "I'm tired" }), true, "el apóstrofo interno cuenta");
+});
+
+Deno.test("cambio 17: lista de pendientes numerada", () => {
+  assertEquals(listaPendientes([{ indice: 0, fragmento: "busses" }, { indice: 8, fragmento: "eties" }]),
+    "Pendientes (2): [0] «busses» · [8] «eties». Reescribe cada uno.");
+});
+
+Deno.test("cambio 19: nota de observaciones sin duplicados y con tope", () => {
+  assertEquals(notaObservaciones([]), "");
+  const o = { fragmento: "tis", correccion: "this" };
+  assertEquals(notaObservaciones([o, o]), "Además observé errores de otros temas (no se evalúan ni hay que reescribirlos): «tis» → «this».");
+  const muchas = Array.from({ length: 12 }, (_, i) => ({ fragmento: `f${i}`, correccion: `c${i}` }));
+  assert(notaObservaciones(muchas, 10).endsWith("«f9» → «c9» (+2 más)."));
+});
+
+Deno.test("cambio 20: propietario y tratamiento según MC-001 §7.5 (grafo inglés real)", () => {
+  assertEquals(normalizarPropietario("EN-510 — Le verbe"), "EN-510");
+  assertEquals(normalizarPropietario("Domaine verbal"), null);
+  const lecciones = [
+    { unidad_id: "EN-411", dominio_id: "EN-400", sous_domaine_id: "EN-410", titulo: "", orden_declarado: 1, prerequis: [], estado_redaccion: "redactado" as const },
+    { unidad_id: "EN-421", dominio_id: "EN-400", sous_domaine_id: "EN-420", titulo: "", orden_declarado: 1, prerequis: [], estado_redaccion: "redactado" as const },
+  ];
+  const datos = (acquis: string[]) => ({
+    grafo: GRAFOS.EN, lecciones,
+    estados: acquis.map((u) => ({ unidad_id: u, estado: "acquis" as const, actualizado_en: "" })),
+  });
+  assertEquals(clasificarFueraDeAlcance("EN-420", datos(["EN-421"])), "corregir_ahora");
+  assertEquals(clasificarFueraDeAlcance("EN-420", datos([])), "diferir");
+  assertEquals(clasificarFueraDeAlcance("EN-510", datos(["EN-411", "EN-421"])), "diferir", "sin lecciones declaradas: aún no estudiado");
+  assertEquals(clasificarFueraDeAlcance("EN-412", datos(["EN-411"])), "diferir", "lección aún no declarada: se resuelve por su sous-domaine");
+  assertEquals(clasificarFueraDeAlcance("EN-170", datos([])), "observar", "fonología = transversal");
+  assertEquals(clasificarFueraDeAlcance("EN-999", datos([])), "observar", "inexistente en el grafo");
+  assertEquals(clasificarFueraDeAlcance(null, datos([])), "observar");
+  assert(perteneceA(lecciones[0], "EN-400") && perteneceA(lecciones[0], "EN-410") && !perteneceA(lecciones[0], "EN-420"));
 });

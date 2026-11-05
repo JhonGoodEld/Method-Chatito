@@ -1,6 +1,6 @@
 {
   "documento": "MC-OPERACIONAL",
-  "version": "1.5.0",
+  "version": "1.7.0",
   "historial": [
     {
       "version": "1.0.0",
@@ -25,6 +25,14 @@
     {
       "version": "1.5.0",
       "cambio": "Alineado con MC-001 v1.0.3: (a) la étape 18 (transformación) NO se corrige (decisión J. Good): sus errores se registran como evidencia, sin corrección ni reescritura; se mantiene la completitud del 80%; (b) se documenta la separación contenido fijo / contenido generado (MC-001 §7.2–§7.4)."
+    },
+    {
+      "version": "1.6.0",
+      "cambio": "Tras la ejecución de EN-411 (decisión J. Good): los errores fuera del alcance se MUESTRAN al alumno al entrar a la étape 17, como observación (fragmento → forma correcta), sin evaluarse ni exigir reescritura. Siguen registrándose como evidencia. Pendiente: corrección diferida al dominio propietario (por diseñar) y reflejar el cambio en MC-001 §7.5 y MC-002 §16."
+    },
+    {
+      "version": "1.7.0",
+      "cambio": "Alineado con MC-001 v1.0.4 y MC-002 v1.2.0 (decisión J. Good tras EN-411): cada error fuera del alcance lleva su propietario (identificador del grafo, tomado de las fronteras del livrable) y sigue uno de tres tratamientos: propietario ya estudiado → se corrige en la étape 17 de la lección en curso; no estudiado → observación y corrección diferida a la étape 17 de la primera lección del propietario; transversal o sin propietario → solo observación."
     }
   ],
   "proposito": "Capa operativa derivada de la saga MC-00X (Método Chatito). Contiene solo las reglas que el agente de IA debe aplicar en tiempo de ejecución, sin la justificación narrativa ni el historial de decisiones que sí viven en los documentos MC originales del repositorio. Es agnóstica de idioma: se usa igual para FR, KO, EN o cualquier arquitectura futura.",
@@ -262,7 +270,13 @@
     "formula_consolidacion": "Se descubre empíricamente por idioma/alumno — el agente no debe asumir un umbral fijo universal.",
     "regla_de_scope_de_correccion": {
       "origen": "Piloto FR-411 (v1.1.0) — el alumno produjo estructuras de dominios no enseñados aún (ej. conjugación verbal en una lección de género nominal).",
-      "regla": "El agente corrige ÚNICAMENTE el objetivo declarado de la unidad activa. Errores de otros dominios se observan y se registran como evidencia (nunca se descartan, Principio 9), pero NO se corrigen ni se evalúan fuera de secuencia — evita violar el Principio 7 (profundidad antes que anchura)."
+      "regla": "La étape 17 evalúa ÚNICAMENTE el objetivo declarado de la unidad activa. Los errores fuera del alcance se registran como evidencia (nunca se descartan, Principio 9) y nunca se corrigen antes de que su conocimiento se haya enseñado (Principio 7). Cada uno lleva su propietario: el identificador del grafo que le asigna la tabla de fronteras del livrable (lección, sous-domaine o dominio).",
+      "tratamientos": {
+        "propietario_ya_estudiado": "Todas sus lecciones declaradas están en acquis o consolidé: se corrige en la étape 17 de la lección en curso, con el 100% exigido.",
+        "propietario_no_estudiado": "Se muestra como observación en la étape 17 (fragmento → forma correcta, sin evaluar ni reescribir) y queda pendiente: se corrige en la étape 17 de la primera lección del propietario (la lección misma, o una de su sous-domaine o dominio) que estudie el alumno, con el 100% exigido.",
+        "transversal_o_sin_propietario": "Propietario de un dominio de naturaleza transversal, o ausente/inexistente en el grafo: solo observación."
+      },
+      "almacenamiento": "Los pendientes diferidos viven en la tabla errores_diferidos y se borran cuando se corrigen (la corrección queda en evidencia)."
     },
     "puntaje_leccion": {
       "origen": "Piloto FR-411 (v1.1.0) — necesario como señal de entrada para consolidacion_continua.motor_reactivacion, NO como evaluación pedagógica.",

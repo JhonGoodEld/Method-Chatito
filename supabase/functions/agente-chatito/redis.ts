@@ -10,7 +10,7 @@
 
 import { Redis } from "npm:@upstash/redis@1";
 import { Ratelimit } from "npm:@upstash/ratelimit@2";
-import { INFRA, secretOpcional } from "./config.ts";
+import { INFRA, limiteGlobalDiario, secretOpcional } from "./config.ts";
 
 const PREFIJO = "mc";
 
@@ -35,7 +35,7 @@ export class ServiciosRedis {
     });
     this.limiteGlobal = new Ratelimit({
       redis,
-      limiter: Ratelimit.fixedWindow(INFRA.LIMITE_GLOBAL_LLM_DIARIO, "1 d"),
+      limiter: Ratelimit.fixedWindow(limiteGlobalDiario(), "1 d"),
       prefix: `${PREFIJO}:rl:global`,
       analytics: false,
     });

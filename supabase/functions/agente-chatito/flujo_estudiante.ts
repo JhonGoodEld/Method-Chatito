@@ -14,28 +14,42 @@
 //   4. Las imágenes se envían al LLM UNA vez; después solo se usa su transcripción.
 
 import { INFRA } from "./config.ts";
-import { evaluarCorreccion, evaluarProduccion, minimoRequerido } from "./completitud.ts";
+import {
+  contarPalabras,
+  esErrorReal,
+  esTextoUnico,
+  evaluarCorreccion,
+  evaluarProduccion,
+  listaPendientes,
+  minimoRequerido,
+  notaObservaciones,
+} from "./completitud.ts";
 import type { Repositorio } from "./datos.ts";
 import { ErrorApp, normalizarError } from "./errores.ts";
 import type { ImagenEntrada, PeticionLLM, ProveedorLLM } from "./llm_tipos.ts";
 import { decodificarBase64 } from "./peticion.ts";
 import { pasoPorNombre, siguientePaso } from "./plan.ts";
-import { bloqueContexto, bloqueDinamico, bloqueEstatico, type Tarea } from "./prompt.ts";
+import { clasificarFueraDeAlcance, normalizarPropietario, perteneceA } from "./alcance.ts";
+import { bloqueContexto, bloqueDinamico, bloqueEstatico, ETAPA_FORMAS_EVIDENCIA, type Tarea } from "./prompt.ts";
 import { calcularPuntaje } from "./puntaje.ts";
 import { evaluarMotor, type ParametrosMotor } from "./reactivacion.ts";
 import type { Registrador } from "./registro.ts";
 import {
+  camposSospechosos,
+  type Contrato,
+  CONTRATO_CORRECCION,
+  CONTRATO_EVALUACION,
+  CONTRATO_MENSAJE,
+  CONTRATO_SOLICITUD,
   parsearSalida,
   type SalidaEvaluacion,
-  SalidaCorreccionSchema,
-  SalidaEvaluacionSchema,
-  SalidaMensajeSchema,
   type SalidaSolicitud,
-  SalidaSolicitudSchema,
+  type Seccion,
 } from "./salida_llm.ts";
 import { decidirSiguiente, type ResultadoSecuenciacion } from "./secuenciacion.ts";
 import type {
   ErrorDetectado,
+  ErrorDiferidoNuevo,
   ErrorSenalado,
   EstadoPublico,
   FilaEvidenciaNueva,
@@ -44,6 +58,7 @@ import type {
   LeccionDeclarada,
   McOperacional,
   NivelRequerido,
+  Observacion,
   PasoPlan,
   Requisitos,
   RespuestaFlujo,
@@ -64,6 +79,8 @@ export interface ContextoFlujo {
   registro: Registrador;
   auxiliares: ServiciosAuxiliares | null;
   obtenerLLM: () => ProveedorLLM;
+  /** Modelo para el segundo intento tras saturación o tiempo agotado; null = el mismo (cambio 11). */
+  obtenerLLMRespaldo?: () => ProveedorLLM | null;
   mc: McOperacional;
   grafos: Readonly<Record<string, Grafo>>;
   usuarioId: string;
@@ -71,6 +88,8 @@ export interface ContextoFlujo {
   ahora: () => Date;
   aleatorio: () => number;
   fallarAbiertoSiRedisCae: boolean;
+  /** Pausa antes de reintentar un fallo pasajero (inyectable para las pruebas). */
+  pausa?: (ms: number) => Promise<void>;
 }
 
 export interface PeticionEstudiante {
@@ -93,6 +112,10 @@ const MENSAJE_CONTINUAR = "(El alumno pulsó «continuar».)";
 // Entrada
 // =====================================================================
 export async function manejarEstudiante(ctx: ContextoFlujo, p: PeticionEstudiante): Promise<RespuestaFlujo> {
+  // Aviso de Privacidad v1.0: sin consentimiento registrado no se trata ningún dato de aprendizaje.
+  if (!(await ctx.repo.consentimientoRegistrado(ctx.usuarioId))) {
+    throw new ErrorApp(313, "Consentimiento pendiente (migración 004: registrar_consentimiento)");
+  }
   const ai = await ctx.repo.obtenerAlumnoIdioma(p.alumno_idioma_id);
   // Mismo error si no existe o si es de otro usuario: no revelar qué IDs existen.
   if (!ai || ai.perfil_id !== ctx.usuarioId) {
@@ -132,13 +155,19 @@ async function continuar(ctx: ContextoFlujo, s: Estado): Promise<RespuestaFlujo>
   const req = s.sesion.requisitos_etapa;
   switch (req.estado_paso) {
     case "esperando_evidencia":
-    case "esperando_correccion":
+    case "esperando_correccion": {
       // Retomar tras recargar la app: sin llamar al LLM.
+      if (req.estado_paso === "esperando_correccion") {
+        const saneada = await sanearCorreccion(ctx, s, pasoPorNombre(plan, req.paso));
+        if (saneada) return saneada;
+      }
+      const actual = s.sesion.requisitos_etapa;
       return {
-        mensaje_agente: req.ultimo_mensaje_agente ?? req.enunciado ?? null,
-        mensaje_sistema: "Retomamos donde te quedaste.",
+        mensaje_agente: actual.ultimo_mensaje_agente ?? actual.enunciado ?? null,
+        mensaje_sistema: ["Retomamos donde te quedaste.", actual.ultimo_mensaje_sistema].filter(Boolean).join(" "),
         estado: estadoPublico(s.sesion),
       };
+    }
 
     case "curriculo_bloqueado":
     case "curriculo_completado": {
@@ -167,7 +196,7 @@ async function entregarPaso(ctx: ContextoFlujo, s: Estado): Promise<RespuestaFlu
   const plan = ctx.mc.leccion.plan_ejecucion.pasos;
   const sesion = s.sesion!;
   const paso = pasoPorNombre(plan, sesion.requisitos_etapa.paso);
-  const acumulados = sesion.requisitos_etapa.errores_acumulados;
+  const acumulados = arrastre(sesion.requisitos_etapa);
   if (paso.tipo === "correccion") return await entregarCorreccion(ctx, s, paso);
   const livrable = await cargarLivrable(ctx, sesion.unidad_id);
 
@@ -178,12 +207,15 @@ async function entregarPaso(ctx: ContextoFlujo, s: Estado): Promise<RespuestaFlu
       tarea: { tipo: "presentar", paso, siguiente, incluirSolicitud },
       mensaje: MENSAJE_CONTINUAR,
       imagenes: [],
-      esquema: SalidaSolicitudSchema,
+      contrato: CONTRATO_SOLICITUD,
       maxTokens: INFRA.MAX_TOKENS_PRESENTACION,
       temperatura: 0.5,
+      validar: (x) => faltanEtapes(x.secciones, paso.etapas),
     });
+    const secciones = ordenarSecciones(salida.secciones, paso.etapas);
+    const mensaje = componerPresentacion(secciones, salida.mensaje_para_alumno);
 
-    if (paso.cierra_unidad) return await completarUnidad(ctx, s, salida.mensaje_para_alumno);
+    if (paso.cierra_unidad) return { ...(await completarUnidad(ctx, s, mensaje)), secciones };
     if (!siguiente) throw new ErrorApp(598, `El paso ${paso.paso} no tiene sucesor y no cierra la unidad`);
 
     if (incluirSolicitud && salida.solicitud) {
@@ -197,11 +229,11 @@ async function entregarPaso(ctx: ContextoFlujo, s: Estado): Promise<RespuestaFlu
           enunciado: salida.solicitud.enunciado,
           niveles,
           transcripciones_previas: [],
-          errores_acumulados: acumulados,
-          ultimo_mensaje_agente: salida.mensaje_para_alumno,
+          ...acumulados,
+          ultimo_mensaje_agente: mensaje,
         },
       });
-      return { mensaje_agente: salida.mensaje_para_alumno, mensaje_sistema: textoPedido(niveles), estado: estadoPublico(s.sesion) };
+      return { mensaje_agente: mensaje, secciones, mensaje_sistema: textoPedido(niveles), estado: estadoPublico(s.sesion) };
     }
 
     if (incluirSolicitud) {
@@ -215,9 +247,9 @@ async function entregarPaso(ctx: ContextoFlujo, s: Estado): Promise<RespuestaFlu
     s.sesion = await ctx.repo.actualizarSesion(sesion, {
       etapa_actual: siguiente.etapas[0],
       fase_correccion: null,
-      requisitos_etapa: { paso: siguiente.paso, estado_paso: "pendiente_presentar", errores_acumulados: acumulados },
+      requisitos_etapa: { paso: siguiente.paso, estado_paso: "pendiente_presentar", ...acumulados },
     });
-    return { mensaje_agente: salida.mensaje_para_alumno, mensaje_sistema: null, estado: estadoPublico(s.sesion) };
+    return { mensaje_agente: mensaje, secciones, mensaje_sistema: null, estado: estadoPublico(s.sesion) };
   }
 
   // Paso de producción: solicitar (declarando antes las formas de evidencia, MC-001 §15).
@@ -225,7 +257,7 @@ async function entregarPaso(ctx: ContextoFlujo, s: Estado): Promise<RespuestaFlu
     tarea: { tipo: "solicitar", paso },
     mensaje: MENSAJE_CONTINUAR,
     imagenes: [],
-    esquema: SalidaSolicitudSchema,
+    contrato: CONTRATO_SOLICITUD,
     maxTokens: INFRA.MAX_TOKENS_PRESENTACION,
     temperatura: 0.5,
   });
@@ -240,7 +272,7 @@ async function entregarPaso(ctx: ContextoFlujo, s: Estado): Promise<RespuestaFlu
       enunciado: salida.solicitud.enunciado,
       niveles,
       transcripciones_previas: [],
-      errores_acumulados: acumulados,
+      ...acumulados,
       ultimo_mensaje_agente: salida.mensaje_para_alumno,
     },
   });
@@ -280,22 +312,40 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
     tarea: { tipo: "evaluar", paso, requisitos: req, estudiadas: await unidadesEstudiadas(ctx, s) },
     mensaje: texto || "(El alumno envió solo imágenes.)",
     imagenes,
-    esquema: SalidaEvaluacionSchema,
+    contrato: CONTRATO_EVALUACION,
     maxTokens: INFRA.MAX_TOKENS_EVALUACION,
     temperatura: 0.2,
   });
 
-  const metricas = emparejarNiveles(req.niveles, salida.niveles);
+  // Cambio 18: una «corrección» idéntica al fragmento no es un error (la IA a veces lista aciertos).
+  const errores = salida.errores.filter(esErrorReal);
+  if (errores.length < salida.errores.length) {
+    await ctx.registro.registrar({
+      codigo: 203,
+      severidad: "warning",
+      mensaje: `Se descartaron ${salida.errores.length - errores.length} «errores» con corrección idéntica al fragmento`,
+      contexto: { paso: paso.paso, fragmentos: salida.errores.filter((e) => !esErrorReal(e)).map((e) => e.fragmento) },
+    });
+  }
+
+  // Cambio 15: en un texto único, las palabras las cuenta el código sobre la transcripción de ESTA entrega.
+  const textoUnico = esTextoUnico(req.niveles);
+  const metricas = emparejarNiveles(req.niveles, salida.niveles).map((m) =>
+    textoUnico ? { ...m, total_entregado: contarPalabras(salida.transcripcion) } : m
+  );
   const factor = ctx.mc.modos_operacion.estudiante.criterio_completitud.factor_minimo;
   const decision = evaluarProduccion(
     metricas.map((m) => ({ nivel: m.nivel, total_pedido: m.total_pedido, total_entregado: m.total_entregado })),
     factor,
   );
+  // Cambio 13: la cantidad no basta; también deben cumplirse las condiciones de contenido de la étape 15.
+  const condicionesFallidas = paso.etapas.includes(ETAPA_FORMAS_EVIDENCIA) ? salida.condiciones.filter((c) => !c.cumple) : [];
+  const completa = decision.cumple && condicionesFallidas.length === 0;
   const intento: Intento = (req.transcripciones_previas?.length ?? 0) === 0 ? "inicial" : "complemento";
   const archivos = await subirImagenes(ctx, s, imagenes);
   const contenido = componerContenido(texto, imagenes.length, salida.transcripcion);
   // Corrección diferida (MC-001 §17): sin evidencia completa no hay corrección ni diagnóstico.
-  const enAlcance = decision.cumple ? salida.errores.filter((e) => !e.fuera_de_scope) : [];
+  const enAlcance = completa ? errores.filter((e) => !e.fuera_de_scope) : [];
   const nivelesValidos = new Set(metricas.map((m) => m.nivel));
 
   const filas: FilaEvidenciaNueva[] = metricas.map((m, i) => {
@@ -311,7 +361,7 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
       contenido_alumno: contenido,
       url_storage: archivos[0] ?? null,
       correccion: erroresFila.length ? erroresFila.map((e) => `${e.fragmento} → ${e.correccion}`).join("\n") : null,
-      diagnosticos: decision.cumple ? propios(salida.errores) : null,
+      diagnosticos: completa ? propios(errores) : null,
       metricas: {
         paso: paso.paso,
         intento,
@@ -322,28 +372,36 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
         total_entregado: m.total_entregado,
         items_evaluados: m.items_evaluados,
         items_correctos: m.items_correctos,
-        diagnostico_diferido: !decision.cumple,
+        diagnostico_diferido: !completa,
+        conteo: textoUnico ? "codigo" : "ia",
+        condiciones: salida.condiciones.filter((c) => c.nivel === m.nivel || (i === 0 && !nivelesValidos.has(c.nivel))),
         archivos,
       },
     };
   });
   await ctx.repo.insertarEvidencias(filas); // ← ANTES de cualquier avance
 
-  if (!decision.cumple) {
+  if (!completa) {
+    const faltas = [
+      ...decision.detalle
+        .filter((d) => !d.cumple)
+        .map((d) => `nivel ${d.nivel ?? "único"}: ${d.entregado} de ${d.pedido} (mínimo ${d.minimo})`),
+      ...condicionesFallidas.map((c) => `nivel ${c.nivel ?? "único"}: falta «${c.condicion}»${c.detalle ? ` (${c.detalle})` : ""}`),
+    ].join("; ");
+    const aviso = textoUnico
+      ? `Tu texto tiene ${metricas[0].total_entregado} palabras; el mínimo es ${metricas[0].minimo_requerido}. Reenvía el texto COMPLETO, ampliado.`
+      : `Aún falta producción — ${faltas}. Envía solo lo que falta.`;
     s.sesion = await ctx.repo.actualizarSesion(sesion, {
       requisitos_etapa: {
         ...req,
         transcripciones_previas: [...(req.transcripciones_previas ?? []), salida.transcripcion],
         ultimo_mensaje_agente: salida.mensaje_para_alumno,
+        ultimo_mensaje_sistema: aviso,
       },
     });
-    const faltas = decision.detalle
-      .filter((d) => !d.cumple)
-      .map((d) => `nivel ${d.nivel ?? "único"}: ${d.entregado} de ${d.pedido} (mínimo ${d.minimo})`)
-      .join("; ");
     return {
       mensaje_agente: salida.mensaje_para_alumno,
-      mensaje_sistema: `Aún falta producción — ${faltas}. Envía solo lo que falta.`,
+      mensaje_sistema: aviso,
       resultado: "requiere_completar",
       estado: estadoPublico(s.sesion),
     };
@@ -362,6 +420,18 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
     // MC-001 §17: la corrección espera a que termine la colecta de las étapes 15 y 16.
     const previos = req.errores_acumulados ?? [];
     const acumulados = [...previos, ...enAlcance.map((e, i) => aSenalado(e, previos.length + i))];
+    // Cambio 19: lo que está fuera del alcance viaja aparte; se mostrará en la étape 17 sin evaluarse.
+    const observaciones = [
+      ...(req.observaciones_acumuladas ?? []),
+      ...errores.filter((e) => e.fuera_de_scope).map((e) => ({
+        fragmento: e.fragmento,
+        correccion: e.correccion,
+        paso: paso.paso,
+        propietario: normalizarPropietario(e.propietario), // MC-001 §7.5
+        explicacion: e.explicacion,
+        causa: e.causa,
+      })),
+    ];
     return await avanzar(
       ctx,
       s,
@@ -369,6 +439,7 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
       salida.mensaje_para_alumno,
       "Producción registrada. La corrección se hará en la étape 17, con toda la evidencia reunida.",
       acumulados,
+      observaciones,
     );
   }
 
@@ -379,6 +450,7 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
 
   if (enAlcance.length > 0) {
     const senalados: ErrorSenalado[] = enAlcance.map((e, i) => aSenalado(e, i));
+    const aviso = `Para continuar se exige corregir el 100 %. ${listaPendientes(senalados)}`;
     s.sesion = await ctx.repo.actualizarSesion(sesion, {
       etapa_actual: ctx.mc.leccion.plan_ejecucion.etapa_correccion,
       fase_correccion: "correction_differee",
@@ -387,11 +459,12 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
         estado_paso: "esperando_correccion",
         errores_senalados: senalados,
         ultimo_mensaje_agente: salida.mensaje_para_alumno,
+        ultimo_mensaje_sistema: aviso,
       },
     });
     return {
       mensaje_agente: salida.mensaje_para_alumno,
-      mensaje_sistema: `Hay ${senalados.length} corrección(es) pendiente(s). Para continuar se exige corregir el 100%.`,
+      mensaje_sistema: aviso,
       resultado: "requiere_correccion",
       estado: estadoPublico(s.sesion),
     };
@@ -402,9 +475,11 @@ async function evaluarEntrega(ctx: ContextoFlujo, s: Estado, texto: string, imag
 
 async function verificarCorreccion(ctx: ContextoFlujo, s: Estado, texto: string, imagenes: ImagenEntrada[]): Promise<RespuestaFlujo> {
   const plan = ctx.mc.leccion.plan_ejecucion.pasos;
+  const paso = pasoPorNombre(plan, s.sesion!.requisitos_etapa.paso);
+  const saneada = await sanearCorreccion(ctx, s, paso); // cambio 18: sesiones guardadas antes del filtro
+  if (saneada) return saneada;
   const sesion = s.sesion!;
   const req = sesion.requisitos_etapa;
-  const paso = pasoPorNombre(plan, req.paso);
   const senalados = req.errores_senalados ?? [];
   if (senalados.length === 0) {
     await ctx.registro.registrar({ codigo: 598, severidad: "warning", mensaje: "esperando_correccion sin errores señalados; se avanza" });
@@ -416,12 +491,14 @@ async function verificarCorreccion(ctx: ContextoFlujo, s: Estado, texto: string,
     tarea: { tipo: "verificar_correccion", paso, errores: senalados },
     mensaje: texto || "(El alumno envió solo imágenes.)",
     imagenes,
-    esquema: SalidaCorreccionSchema,
+    contrato: CONTRATO_CORRECCION,
     maxTokens: INFRA.MAX_TOKENS_EVALUACION,
     temperatura: 0.2,
   });
 
   const r = evaluarCorreccion(senalados.map((e) => e.indice), salida.indices_corregidos);
+  // MC-001 §7.5: un error diferido corregido ya no está pendiente.
+  await saldarDiferidos(ctx, senalados.filter((e) => !r.pendientes.includes(e.indice)));
   const archivos = await subirImagenes(ctx, s, imagenes);
   await ctx.repo.insertarEvidencias([{
     alumno_idioma_id: s.ai.id,
@@ -445,14 +522,55 @@ async function verificarCorreccion(ctx: ContextoFlujo, s: Estado, texto: string,
   if (r.completa) return await avanzar(ctx, s, paso, salida.mensaje_para_alumno, "Corrección completa (100%).");
 
   const pendientes = senalados.filter((e) => r.pendientes.includes(e.indice));
+  const aviso = `Corregiste ${r.corregidos} de ${senalados.length}. ${listaPendientes(pendientes)}`;
   s.sesion = await ctx.repo.actualizarSesion(sesion, {
-    requisitos_etapa: { ...req, errores_senalados: pendientes, ultimo_mensaje_agente: salida.mensaje_para_alumno },
+    requisitos_etapa: {
+      ...req,
+      errores_senalados: pendientes,
+      ultimo_mensaje_agente: salida.mensaje_para_alumno,
+      ultimo_mensaje_sistema: aviso,
+    },
   });
   return {
     mensaje_agente: salida.mensaje_para_alumno,
-    mensaje_sistema: `Corregiste ${r.corregidos} de ${senalados.length}. Faltan ${pendientes.length}.`,
+    mensaje_sistema: aviso,
     resultado: "correccion_incompleta",
     estado: estadoPublico(s.sesion),
+  };
+}
+
+/**
+ * Cambio 18: quita de lo señalado las «correcciones» idénticas al fragmento
+ * (sesiones guardadas antes del filtro de la evaluación). Si no queda nada
+ * real, la corrección está completa y se avanza; si cambia algo, se guarda la
+ * lista depurada. Devuelve la respuesta solo cuando avanza.
+ */
+async function sanearCorreccion(ctx: ContextoFlujo, s: Estado, paso: PasoPlan): Promise<RespuestaFlujo | null> {
+  const req = s.sesion!.requisitos_etapa;
+  const lista = req.errores_senalados ?? [];
+  const reales = lista.filter(esErrorReal);
+  if (reales.length === lista.length) return null;
+  await ctx.registro.registrar({
+    codigo: 203,
+    severidad: "warning",
+    mensaje: `Se descartaron ${lista.length - reales.length} pendientes con corrección idéntica al fragmento`,
+    contexto: { paso: paso.paso, fragmentos: lista.filter((e) => !esErrorReal(e)).map((e) => e.fragmento) },
+  });
+  await saldarDiferidos(ctx, lista.filter((e) => !esErrorReal(e)));
+  if (reales.length === 0) {
+    return await avanzar(ctx, s, paso, null, "Corrección completa: lo que quedaba pendiente no eran errores.");
+  }
+  s.sesion = await ctx.repo.actualizarSesion(s.sesion!, {
+    requisitos_etapa: { ...req, errores_senalados: reales, ultimo_mensaje_sistema: listaPendientes(reales) },
+  });
+  return null;
+}
+
+/** Lo que viaja entre pasos hasta la étape 17: errores a corregir y observaciones (cambio 19). */
+function arrastre(req: Pick<Requisitos, "errores_acumulados" | "observaciones_acumuladas">) {
+  return {
+    ...(req.errores_acumulados?.length ? { errores_acumulados: req.errores_acumulados } : {}),
+    ...(req.observaciones_acumuladas?.length ? { observaciones_acumuladas: req.observaciones_acumuladas } : {}),
   };
 }
 
@@ -463,6 +581,7 @@ async function avanzar(
   mensajeAgente: string | null,
   mensajeSistema: string,
   acumulados: ErrorSenalado[] | undefined = s.sesion!.requisitos_etapa.errores_acumulados,
+  observaciones: Observacion[] | undefined = s.sesion!.requisitos_etapa.observaciones_acumuladas,
 ): Promise<RespuestaFlujo> {
   const siguiente = siguientePaso(ctx.mc.leccion.plan_ejecucion.pasos, paso);
   if (!siguiente) throw new ErrorApp(598, `El paso ${paso.paso} no tiene sucesor`);
@@ -472,7 +591,7 @@ async function avanzar(
     requisitos_etapa: {
       paso: siguiente.paso,
       estado_paso: "pendiente_presentar",
-      ...(acumulados?.length ? { errores_acumulados: acumulados } : {}),
+      ...arrastre({ errores_acumulados: acumulados, observaciones_acumuladas: observaciones }),
     },
   });
   return { mensaje_agente: mensajeAgente, mensaje_sistema: mensajeSistema, resultado: "avanza", estado: estadoPublico(s.sesion) };
@@ -481,9 +600,104 @@ async function avanzar(
 // =====================================================================
 // Étape 17 — corrección diferida de las étapes 15 y 16
 // =====================================================================
+/**
+ * MC-001 v1.0.4 §7.5 — al entrar a la étape 17, cada observación fuera del alcance se clasifica:
+ *   corregir_ahora → se suma a lo que hay que corregir aquí
+ *   diferir        → se guarda en errores_diferidos y se muestra «(se corregirá en X)»
+ *   observar       → solo se muestra
+ * Además se cargan los diferidos de OTRAS lecciones cuyo propietario es esta.
+ * La tabla falla en suave: sin la migración 005, todo queda como observación.
+ */
+async function prepararFueraDeAlcance(ctx: ContextoFlujo, s: Estado): Promise<{ aCorregir: ErrorSenalado[]; nota: string }> {
+  const sesion = s.sesion!;
+  const vistas = new Set<string>();
+  const observaciones = (sesion.requisitos_etapa.observaciones_acumuladas ?? []).filter(esErrorReal).filter((o) => {
+    const clave = `${o.fragmento}→${o.correccion}`;
+    return vistas.has(clave) ? false : (vistas.add(clave), true);
+  });
+  const estados = observaciones.some((o) => o.propietario) ? await ctx.repo.obtenerEstados(s.ai.id) : [];
+  const datos = { grafo: s.grafo, lecciones: s.lecciones, estados };
+
+  const aCorregir: ErrorSenalado[] = [];
+  const visibles: Array<{ fragmento: string; correccion: string; destino?: string }> = [];
+  const nuevos: ErrorDiferidoNuevo[] = [];
+  for (const o of observaciones) {
+    const propietario = o.propietario ?? null;
+    const tratamiento = clasificarFueraDeAlcance(propietario, datos);
+    const base = { indice: 0, fragmento: o.fragmento, correccion: o.correccion, explicacion: o.explicacion ?? "", causa: o.causa };
+    if (tratamiento === "corregir_ahora") {
+      aCorregir.push({ ...base, paso: "otra lección", tema: propietario! });
+    } else if (tratamiento === "diferir") {
+      nuevos.push({
+        alumno_idioma_id: s.ai.id,
+        propietario: propietario!,
+        unidad_origen: sesion.unidad_id,
+        fragmento: o.fragmento,
+        correccion: o.correccion,
+        explicacion: o.explicacion ?? "",
+        causa: o.causa ?? null,
+      });
+      visibles.push({ fragmento: o.fragmento, correccion: o.correccion, destino: propietario! });
+    } else {
+      visibles.push({ fragmento: o.fragmento, correccion: o.correccion });
+    }
+  }
+
+  const leccion = s.lecciones.find((l) => l.unidad_id === sesion.unidad_id);
+  try {
+    await ctx.repo.guardarErroresDiferidos(nuevos);
+    const pendientes = leccion ? await ctx.repo.obtenerErroresDiferidos(s.ai.id) : [];
+    for (const d of pendientes) {
+      if (d.unidad_origen === sesion.unidad_id || !perteneceA(leccion!, d.propietario) || !esErrorReal(d)) continue;
+      aCorregir.push({
+        indice: 0,
+        fragmento: d.fragmento,
+        correccion: d.correccion,
+        explicacion: d.explicacion,
+        causa: d.causa ?? undefined,
+        paso: `otra lección (${d.unidad_origen})`,
+        tema: d.propietario,
+        diferido_id: d.id,
+      });
+    }
+  } catch (e) {
+    const err = normalizarError(e);
+    await ctx.registro.registrar({
+      codigo: err.codigo,
+      severidad: "warning",
+      mensaje: `Corrección diferida no disponible (¿migración 005?): ${err.detalleTecnico}`,
+    });
+  }
+  return { aCorregir, nota: notaObservaciones(visibles) };
+}
+
+/** Borra de errores_diferidos los que el alumno ya corrigió (fallo suave). */
+async function saldarDiferidos(ctx: ContextoFlujo, errores: ErrorSenalado[]): Promise<void> {
+  const ids = errores.map((e) => e.diferido_id).filter((id): id is string => !!id);
+  if (ids.length === 0) return;
+  try {
+    await ctx.repo.borrarErroresDiferidos(ids);
+  } catch (e) {
+    const err = normalizarError(e);
+    await ctx.registro.registrar({ codigo: err.codigo, severidad: "warning", mensaje: `No se borraron errores diferidos: ${err.detalleTecnico}` });
+  }
+}
+
 async function entregarCorreccion(ctx: ContextoFlujo, s: Estado, paso: PasoPlan): Promise<RespuestaFlujo> {
   const sesion = s.sesion!;
-  const errores = sesion.requisitos_etapa.errores_acumulados ?? [];
+  const acumulados = sesion.requisitos_etapa.errores_acumulados ?? [];
+  const delObjetivo = acumulados.filter(esErrorReal); // cambio 18: acumulados antes del filtro
+  // MC-001 §7.5: se suman los fuera del alcance que se corrigen aquí (ya estudiados o diferidos a esta lección).
+  const fuera = await prepararFueraDeAlcance(ctx, s);
+  const errores = [...delObjetivo, ...fuera.aCorregir];
+  const nota = fuera.nota;
+  if (delObjetivo.length < acumulados.length) {
+    await ctx.registro.registrar({
+      codigo: 203,
+      severidad: "warning",
+      mensaje: `Se descartaron ${acumulados.length - delObjetivo.length} errores acumulados con corrección idéntica al fragmento`,
+    });
+  }
   const siguiente = siguientePaso(ctx.mc.leccion.plan_ejecucion.pasos, paso);
   if (!siguiente) throw new ErrorApp(598, `El paso de corrección ${paso.paso} no tiene sucesor`);
 
@@ -497,7 +711,7 @@ async function entregarCorreccion(ctx: ContextoFlujo, s: Estado, paso: PasoPlan)
     const r = await entregarPaso(ctx, s);
     return {
       ...r,
-      mensaje_sistema: ["Étape 17: no hubo errores dentro del alcance que corregir.", r.mensaje_sistema].filter(Boolean).join(" "),
+      mensaje_sistema: ["Étape 17: no hubo errores que corregir.", nota, r.mensaje_sistema].filter(Boolean).join(" "),
     };
   }
 
@@ -507,7 +721,7 @@ async function entregarCorreccion(ctx: ContextoFlujo, s: Estado, paso: PasoPlan)
     tarea: { tipo: "corregir", paso, errores: senalados },
     mensaje: MENSAJE_CONTINUAR,
     imagenes: [],
-    esquema: SalidaMensajeSchema,
+    contrato: CONTRATO_MENSAJE,
     maxTokens: INFRA.MAX_TOKENS_PRESENTACION,
     temperatura: 0.3,
   });
@@ -519,11 +733,12 @@ async function entregarCorreccion(ctx: ContextoFlujo, s: Estado, paso: PasoPlan)
       estado_paso: "esperando_correccion",
       errores_senalados: senalados,
       ultimo_mensaje_agente: salida.mensaje_para_alumno,
+      ultimo_mensaje_sistema: `Corrección de las étapes 15 y 16 (se exige el 100 %). ${listaPendientes(senalados)}`,
     },
   });
   return {
     mensaje_agente: salida.mensaje_para_alumno,
-    mensaje_sistema: `Corrección de las étapes 15 y 16: ${senalados.length} error(es). Reescribe cada uno; se exige el 100% para continuar.`,
+    mensaje_sistema: [`Corrección de las étapes 15 y 16 (se exige el 100 %). ${listaPendientes(senalados)}`, nota].filter(Boolean).join(" "),
     resultado: "requiere_correccion",
     estado: estadoPublico(s.sesion),
   };
@@ -660,19 +875,25 @@ interface OpcionesLLM<T> {
   tarea: Tarea;
   mensaje: string;
   imagenes: ImagenEntrada[];
-  esquema: Parameters<typeof parsearSalida<T>>[0];
+  contrato: Contrato<T>;
   maxTokens: number;
   temperatura: number;
+  /** Comprobación adicional del contenido; devuelve el problema o null. Se repara como un fallo de contrato. */
+  validar?: (salida: T) => string | null;
 }
 
+/**
+ * Llama al LLM y valida su respuesta contra el contrato.
+ * Si falla (203), se hace UN segundo intento, según el tipo de fallo (cambio 3):
+ *   cortada  → se repite desde cero con el doble de espacio (hasta MAX_TOKENS_TOPE)
+ *   ilegible → no era JSON (p. ej. un modelo clasificador): se repite desde cero
+ *   contrato → JSON con campos mal: se le devuelve al modelo con los errores exactos
+ * Las imágenes no se reenvían al reparar un contrato: el modelo ya las analizó.
+ * Si el segundo intento también falla, se lanza el 203 y la sesión no se toca.
+ */
 async function llamarLLM<T>(ctx: ContextoFlujo, s: Estado, livrable: string, o: OpcionesLLM<T>): Promise<T> {
-  const limite = await conRedis(ctx, (a) => a.verificarLimiteGlobalLLM(), { permitido: true, reintentarEnSeg: 0 });
-  if (!limite.permitido) {
-    throw new ErrorApp(430, "Tope diario global de llamadas al LLM alcanzado", { reintentar_en_seg: limite.reintentarEnSeg });
-  }
-
   const unidad = s.lecciones.find((l) => l.unidad_id === s.sesion!.unidad_id);
-  const peticion: PeticionLLM = {
+  const base: PeticionLLM = {
     sistema: {
       estatico: bloqueEstatico(ctx.mc, INFRA.IDIOMA_INTERFAZ),
       contexto: bloqueContexto(
@@ -685,24 +906,142 @@ async function llamarLLM<T>(ctx: ContextoFlujo, s: Estado, livrable: string, o: 
     imagenes: o.imagenes,
     maxTokens: o.maxTokens,
     temperatura: o.temperatura,
+    formato: { nombre: o.contrato.nombre, esquema: o.contrato.json },
+  };
+  let ultimoTexto = "";
+
+  const intentar = async (peticion: PeticionLLM, intento: number, llm?: ProveedorLLM): Promise<T> => {
+    const r = await generarYRegistrar(ctx, peticion, o, intento, llm);
+    ultimoTexto = r.texto;
+    const info = { tarea: o.tarea.tipo, proveedor: r.proveedor, modelo: r.modelo, intento };
+    if (r.cortada) {
+      throw new ErrorApp(203, `Respuesta cortada por el límite de ${peticion.maxTokens} tokens`, { ...info, tipo_fallo: "cortada" });
+    }
+    const salida = parsearSalida(o.contrato.zod, r.texto, info);
+    const problema = o.validar?.(salida);
+    if (problema) {
+      throw new ErrorApp(203, `JSON fuera de contrato: ${problema}`, { ...info, tipo_fallo: "contrato", fragmento: r.texto.slice(0, 300) });
+    }
+    const sospechosos = camposSospechosos(r.texto);
+    if (sospechosos.length) {
+      await ctx.registro.registrar({
+        codigo: 203,
+        severidad: "warning",
+        mensaje: `Posible corte del proveedor: texto de exactamente 4096 caracteres en ${sospechosos.join(", ")}`,
+        contexto: info,
+      });
+    }
+    return salida;
   };
 
-  const llm = ctx.obtenerLLM();
+  let fallo: ErrorApp;
+  try {
+    return await intentar(base, 1);
+  } catch (e) {
+    if (!(e instanceof ErrorApp) || !REINTENTABLES.has(e.codigo)) throw e;
+    fallo = e;
+  }
+
+  // Fallos pasajeros del proveedor (saturación, tiempo agotado, error del
+  // proveedor): una pausa y se repite la MISMA petición, una sola vez, con el
+  // modelo de respaldo si lo hay (cambio 11). Si el proveedor avisó saturación,
+  // la pausa es más larga (cambio 12).
+  if (fallo.codigo !== 203) {
+    const saturado = fallo.codigo === 202 || fallo.contexto.http === 503;
+    const respaldo = await obtenerRespaldo(ctx);
+    const pausaMs = saturado ? INFRA.PAUSA_SATURACION_MS : INFRA.PAUSA_REINTENTO_MS;
+    await ctx.registro.registrar({
+      codigo: fallo.codigo,
+      severidad: "warning",
+      mensaje: `Segundo intento tras fallo pasajero: ${fallo.detalleTecnico}`,
+      contexto: { ...fallo.contexto, saturado, pausa_ms: pausaMs, modelo_segundo_intento: respaldo?.modelo ?? "el mismo" },
+    });
+    await (ctx.pausa ?? esperar)(pausaMs);
+    return await intentar(base, 2, respaldo ?? undefined);
+  }
+
+  const tipo = fallo.contexto.tipo_fallo;
+  await ctx.registro.registrar({
+    codigo: 203,
+    severidad: "warning",
+    mensaje: `Segundo intento (${tipo ?? "respuesta vacía"}): ${fallo.detalleTecnico}`,
+    contexto: fallo.contexto,
+  });
+
+  let segunda: PeticionLLM;
+  if (tipo === "cortada") {
+    segunda = { ...base, maxTokens: Math.min(base.maxTokens * 2, INFRA.MAX_TOKENS_TOPE) };
+  } else if (tipo === "contrato" && ultimoTexto.trim() !== "") {
+    segunda = {
+      ...base,
+      imagenes: [],
+      mensajeUsuario: o.imagenes.length
+        ? `${o.mensaje}\n(Las imágenes ya las analizaste en tu respuesta anterior.)`
+        : o.mensaje,
+      historial: [
+        { rol: "assistant", texto: ultimoTexto },
+        {
+          rol: "user",
+          texto: `Tu respuesta anterior no cumple el formato obligatorio: ${fallo.detalleTecnico}. ` +
+            `Devuelve SOLO el objeto JSON completo y corregido, con exactamente los campos del formato de la TAREA, sin texto adicional.`,
+        },
+      ],
+    };
+  } else {
+    segunda = { ...base }; // no era JSON o llegó vacía: se repite desde cero
+  }
+  return await intentar(segunda, 2);
+}
+
+/**
+ * Códigos con derecho a UN segundo intento: 203 (formato) y los fallos pasajeros
+ * del proveedor 202 (saturado), 204 (tiempo agotado) y 206 (error del proveedor).
+ * Nunca se reintentan 201 (clave), 205 (configuración), 207 (sin crédito) ni 430.
+ */
+const REINTENTABLES = new Set<number>([202, 203, 204, 206]);
+
+const esperar = (ms: number) => new Promise<void>((resuelve) => setTimeout(resuelve, ms));
+
+/** El respaldo nunca debe impedir el segundo intento: si no se puede crear, se usa el principal. */
+async function obtenerRespaldo(ctx: ContextoFlujo): Promise<ProveedorLLM | null> {
+  try {
+    return ctx.obtenerLLMRespaldo?.() ?? null;
+  } catch (e) {
+    const err = normalizarError(e);
+    await ctx.registro.registrar({ codigo: err.codigo, severidad: "warning", mensaje: `Sin modelo de respaldo: ${err.detalleTecnico}` });
+    return null;
+  }
+}
+
+/** Una llamada real: respeta el tope diario global y registra el uso (código 900). */
+async function generarYRegistrar<T>(
+  ctx: ContextoFlujo,
+  peticion: PeticionLLM,
+  o: OpcionesLLM<T>,
+  intento: number,
+  elegido?: ProveedorLLM,
+) {
+  const llm = elegido ?? ctx.obtenerLLM();
+  const limite = await conRedis(ctx, (a) => a.verificarLimiteGlobalLLM(), { permitido: true, reintentarEnSeg: 0 });
+  if (!limite.permitido) {
+    throw new ErrorApp(430, "Tope diario global de llamadas al LLM alcanzado", { reintentar_en_seg: limite.reintentarEnSeg });
+  }
   const respuesta = await llm.generar(peticion);
   if (INFRA.REGISTRAR_USO_LLM) {
     await ctx.registro.registrar({
       codigo: 900,
       contexto: {
         tarea: o.tarea.tipo,
+        intento,
         proveedor: respuesta.proveedor,
         modelo: respuesta.modelo,
         uso: respuesta.uso,
         latencia_ms: respuesta.latenciaMs,
-        imagenes: o.imagenes.length,
+        imagenes: peticion.imagenes.length,
       },
     });
   }
-  return parsearSalida(o.esquema, respuesta.texto, { tarea: o.tarea.tipo, proveedor: respuesta.proveedor, modelo: respuesta.modelo });
+  return respuesta;
 }
 
 async function subirImagenes(ctx: ContextoFlujo, s: Estado, imagenes: ImagenEntrada[]): Promise<string[]> {
@@ -782,6 +1121,29 @@ function parametrosMotor(mc: McOperacional): ParametrosMotor {
   };
 }
 
+/** Cambio 5: comprueba que llegaron exactamente las étapes del paso, sin faltantes ni duplicadas. */
+function faltanEtapes(secciones: Seccion[], esperadas: number[]): string | null {
+  const recibidas = secciones.map((x) => x.etapa);
+  const faltan = esperadas.filter((n) => !recibidas.includes(n));
+  const sobran = recibidas.filter((n) => !esperadas.includes(n));
+  const repetidas = recibidas.filter((n, i) => recibidas.indexOf(n) !== i);
+  const problemas = [
+    faltan.length ? `faltan las étapes ${faltan.join(", ")} en «secciones»` : "",
+    sobran.length ? `sobran las étapes ${sobran.join(", ")}` : "",
+    repetidas.length ? `étapes repetidas: ${repetidas.join(", ")}` : "",
+  ].filter(Boolean);
+  return problemas.length ? problemas.join("; ") : null;
+}
+
+function ordenarSecciones(secciones: Seccion[], esperadas: number[]): Seccion[] {
+  return esperadas.map((n) => secciones.find((x) => x.etapa === n)!).filter(Boolean);
+}
+
+/** Texto completo de la presentación (para guardar y para clientes que no usan las secciones). */
+function componerPresentacion(secciones: Seccion[], cierre: string): string {
+  return [...secciones.map((x) => `## Étape ${x.etapa} — ${x.titulo}\n\n${x.texto}`), cierre].filter((x) => x.trim()).join("\n\n");
+}
+
 /** Mientras se recoge producción con corrección diferida, la étape 17 está en su fase 1. */
 function faseDe(paso: PasoPlan): Sesion["fase_correccion"] {
   return paso.tipo === "produccion" && paso.correccion === "diferida" ? "collecte_evidence" : null;
@@ -837,6 +1199,7 @@ export function estadoPublico(sesion: Sesion): EstadoPublico {
     paso: req.paso,
     fase,
     niveles: req.estado_paso === "esperando_evidencia" ? req.niveles : undefined,
+    enunciado: req.estado_paso === "esperando_evidencia" ? req.enunciado : undefined,
     errores_pendientes: req.estado_paso === "esperando_correccion" ? req.errores_senalados?.length : undefined,
     bloqueo: req.bloqueo,
   };

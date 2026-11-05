@@ -27,10 +27,10 @@ export const GRAFOS: Readonly<Record<string, Grafo>> = {
 export const INFRA = {
   /** Mensajes por minuto por usuario. Una lección no requiere más. */
   LIMITE_USUARIO_POR_MINUTO: 6,
-  /** Llamadas al LLM por día para TODA la app. OpenRouter gratis sin créditos = 50/día. */
-  LIMITE_GLOBAL_LLM_DIARIO: 45,
-  /** Candado anti doble-envío por usuario (segundos). Debe superar TIMEOUT_LLM_MS. */
-  CANDADO_TTL_SEGUNDOS: 90,
+  /** Llamadas al LLM por día para TODA la app, si no se define el secret LLM_LIMITE_DIARIO. */
+  LIMITE_GLOBAL_LLM_DIARIO_POR_DEFECTO: 200,
+  /** Candado anti doble-envío por usuario (segundos). Debe superar 2 × TIMEOUT_LLM_MS (llamada + reparación). */
+  CANDADO_TTL_SEGUNDOS: 150,
   CACHE_LIVRABLE_TTL_SEGUNDOS: 3600,
   MAX_IMAGENES: 3,
   /** Bytes decodificados por imagen: el frontend DEBE reducirlas antes de enviar. */
@@ -45,11 +45,25 @@ export const INFRA = {
   SEVERIDAD_MINIMA_REGISTRO: "warning" as const,
   IDIOMA_INTERFAZ: "español",
   MAX_EVIDENCIAS_MOTOR: 500,
-  MAX_TOKENS_PRESENTACION: 3000,
+  /** La presentación (étapes 8–14, una sección por étape) es la respuesta más larga. */
+  MAX_TOKENS_PRESENTACION: 6000,
+  /** Pausa antes de repetir una petición tras un fallo pasajero del proveedor. */
+  PAUSA_REINTENTO_MS: 1500,
+  /** Pausa más larga cuando el proveedor avisa saturación (503 "high demand" o 429) — cambio 12.
+   *  Peor caso de una petición: 60 s + 5 s + 60 s = 125 s < 150 s (límite de Supabase y del candado). */
+  PAUSA_SATURACION_MS: 5000,
+  /** Tope al duplicar el límite tras una respuesta cortada (cambio 3). */
+  MAX_TOKENS_TOPE: 12000,
   MAX_TOKENS_EVALUACION: 2500,
   BUCKET_EVIDENCIAS: "evidencias",
   MODELO_CLAUDE_POR_DEFECTO: "claude-sonnet-5-5",
-  MODELO_OPENROUTER_POR_DEFECTO: "openrouter/free",
+  /** Pruebas del desarrollador (no apto para menores ni datos reales: ver llm_gemini.ts). */
+  MODELO_GEMINI_POR_DEFECTO: "gemini-3.8-flash",
+  /** El mínimo que admite gemini-3.8-flash (no tiene MINIMAL). */
+  NIVEL_RAZONAMIENTO_GEMINI: "LOW" as const,
+  /** Respaldo para el segundo intento tras saturación o tiempo agotado (cambio 11).
+   *  Estable, gratis, lee imágenes, admite esquema JSON y el nivel LOW. Se cambia con LLM_MODEL_RESPALDO. */
+  MODELO_GEMINI_RESPALDO: "gemini-3.5-flash-lite",
 } as const;
 
 // ---------- Secrets (lectura perezosa) ----------
@@ -66,6 +80,17 @@ export function secretObligatorio(nombre: string): string {
 
 export function secretOpcional(nombre: string): string | undefined {
   return leer(nombre);
+}
+
+/** Tope diario global de llamadas al LLM: secret LLM_LIMITE_DIARIO (entero 1–100000) o el valor por defecto. */
+export function limiteGlobalDiario(): number {
+  const crudo = leer("LLM_LIMITE_DIARIO");
+  if (crudo === undefined) return INFRA.LIMITE_GLOBAL_LLM_DIARIO_POR_DEFECTO;
+  const n = Number(crudo);
+  if (!Number.isInteger(n) || n < 1 || n > 100_000) {
+    throw new ErrorApp(598, `LLM_LIMITE_DIARIO inválido: "${crudo}" (debe ser un entero entre 1 y 100000)`);
+  }
+  return n;
 }
 
 // ---------- Validación de los datos canónicos ----------
